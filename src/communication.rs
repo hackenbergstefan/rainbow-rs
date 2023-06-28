@@ -4,9 +4,10 @@ use std::net::{TcpListener, TcpStream};
 use log::info;
 use unicorn_engine::{RegisterARM, Unicorn};
 
+use super::error::TraceEmulatorError;
 use super::leakage::LeakageModel;
 use super::trace_emulator::hook_force_return;
-use super::trace_emulator::{ThumbTraceEmulator, TraceEmulatorError};
+use super::trace_emulator::ThumbTraceEmulator;
 
 pub trait Communication {
     fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError>;
@@ -27,17 +28,22 @@ impl SimpleSerial {
 
     pub fn hook_init_uart<'a, L: LeakageModel>(
         emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
-    ) {
+    ) -> bool {
         hook_force_return(emu);
+        true
     }
 
     pub fn hook_getch<'a, L: LeakageModel>(
         emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
-    ) {
-        // TODO: Replace unwrap
-        let received = emu.get_data_mut().communication.read(1).unwrap()[0] as u64;
-        emu.reg_write(RegisterARM::R0, received).unwrap();
-        hook_force_return(emu);
+    ) -> bool {
+        match emu.get_data_mut().communication.read(1) {
+            Ok(val) => {
+                emu.reg_write(RegisterARM::R0, val[0] as u64).unwrap();
+                hook_force_return(emu);
+                true
+            }
+            Err(_) => false,
+        }
     }
 }
 

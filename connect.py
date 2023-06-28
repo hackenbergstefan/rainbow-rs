@@ -33,5 +33,5 @@ if __name__ == "__main__":
     t = time.time()
     for _ in range(1):
         sock.simpleserial_write(0x01, 16 * b"\x01")
-        sock.sock.recv(2)
+        # sock.sock.recv(2)
     print(time.time() - t)
