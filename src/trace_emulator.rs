@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2023 Stefan Hackenberg <mail@stefan-hackenberg.de>
+//
+// SPDX-License-Identifier: MIT
+
+//! Implementation of an Emulator generating (side-channel) traces for Thumb based binary code.
+
 use std::io::Read;
 
 use super::asmutils::disassemble;
@@ -12,7 +18,7 @@ use capstone::OwnedInsn;
 use capstone::RegId;
 use elf::endian::AnyEndian;
 use elf::ElfBytes;
-use log::info;
+use log::{info, trace};
 use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 use unicorn_engine::{RegisterARM, Unicorn};
 
@@ -233,6 +239,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
     }
 }
 
+/// Implementation of ChipWhisperer™-Lite Arm (STM32F4)
 pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
     elffile: &str,
     leakage: L,
@@ -270,19 +277,18 @@ pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
         emu.register_hook("trigger_high", hook_trigger_high)?;
         emu.register_hook("trigger_low", hook_trigger_low)?;
     }
-    emu.add_mem_hook(
-        HookType::MEM_ALL,
-        0,
-        0xFFFF_0000,
-        |_emu, _memtype, _address, _, _| {
-            // println!("{:?} at {:08x}", memtype, address);
-            true
-        },
-    )
-    .unwrap();
 
-    for (addr, _func) in &emu.get_data().hooks {
-        println!("Hook at {:08x}", addr);
+    if log::log_enabled!(log::Level::Trace) {
+        emu.add_mem_hook(
+            HookType::MEM_ALL,
+            0,
+            0xFFFF_0000,
+            |_emu, memtype, address, _, _| {
+                trace!("{:?} at {:08x}", memtype, address);
+                true
+            },
+        )
+        .unwrap();
     }
 
     Ok(emu)

@@ -1,14 +1,21 @@
+// SPDX-FileCopyrightText: 2023 Stefan Hackenberg <mail@stefan-hackenberg.de>
+//
+// SPDX-License-Identifier: MIT
+
 use capstone::{arch::arm::ArmOperandType, prelude::DetailsArchInsn, Insn, InsnDetail};
 use log::debug;
 
 use super::trace_emulator::regid2regindex;
 use super::trace_emulator::THUMB_TRACE_REGISTERS;
 
-pub fn hamming_weight(val: u32) -> u32 {
-    val.count_ones()
+/// Calculation of hamming weight (i.e. number of 1-bits in value)
+pub fn hamming_weight(value: u32) -> u32 {
+    value.count_ones()
 }
 
+/// Generic Leakage Model
 pub trait LeakageModel {
+    /// Calculate the value of the trace point at given instruction
     fn calculate(
         &self,
         instruction: &Insn,
@@ -18,6 +25,8 @@ pub trait LeakageModel {
     ) -> f32;
 }
 
+/// Hamming Weight leakage.
+/// HammingWeightLeakage leaks the hamming weight of every changed register value
 pub struct HammingWeightLeakage {}
 
 impl HammingWeightLeakage {
@@ -27,7 +36,6 @@ impl HammingWeightLeakage {
 }
 
 impl LeakageModel for HammingWeightLeakage {
-    /// HW leakage leaks the hamming weight of every changed register value
     fn calculate(
         &self,
         instruction: &Insn,

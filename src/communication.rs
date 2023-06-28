@@ -1,3 +1,9 @@
+// SPDX-FileCopyrightText: 2023 Stefan Hackenberg <mail@stefan-hackenberg.de>
+//
+// SPDX-License-Identifier: MIT
+
+//! Implementation of facilities communicating with `ThumbTraceEmulator`.
+
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
@@ -14,6 +20,13 @@ pub trait Communication {
     fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError>;
 }
 
+/// Adapter for SimpleSerial protocol over TCP Socket.
+/// ChipWhisperer™ is using
+/// [SimpleSerial](https://github.com/newaetech/chipwhisperer/blob/develop/software/chipwhisperer/capture/targets/SimpleSerial2.py)
+/// as easy communication protocol over UART.
+///
+/// ThumbTraceEmulator can leverage binaries using SimpleSerial with this
+/// adapter to establish communication over TCP Socket.
 #[derive(Debug)]
 pub struct SimpleSerial {
     stream: TcpStream,
