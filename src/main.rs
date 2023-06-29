@@ -13,6 +13,9 @@ mod error;
 mod leakage;
 mod trace_emulator;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Parser, Debug)]
 #[command(version)]
 struct CmdlineArgs {
@@ -60,4 +63,20 @@ fn main() {
     .unwrap();
     emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
         .unwrap();
+}
+
+#[cfg(test)]
+mod test_parser {
+    use super::*;
+
+    #[test]
+    fn test_args() {
+        use clap::CommandFactory;
+        CmdlineArgs::command().debug_assert();
+    }
+
+    #[test]
+    fn test_non_existing_file() {
+        assert!(CmdlineArgs::try_parse_from([&"./foo.elf"].iter()).is_err())
+    }
 }

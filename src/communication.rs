@@ -10,10 +10,10 @@ use std::net::{TcpListener, TcpStream};
 use log::info;
 use unicorn_engine::{RegisterARM, Unicorn};
 
-use super::error::TraceEmulatorError;
-use super::leakage::LeakageModel;
-use super::trace_emulator::hook_force_return;
-use super::trace_emulator::ThumbTraceEmulator;
+use crate::error::TraceEmulatorError;
+use crate::leakage::LeakageModel;
+use crate::trace_emulator::hook_force_return;
+use crate::trace_emulator::ThumbTraceEmulator;
 
 pub trait Communication {
     fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError>;

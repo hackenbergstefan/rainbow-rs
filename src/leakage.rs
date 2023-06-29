@@ -5,8 +5,8 @@
 use capstone::{arch::arm::ArmOperandType, prelude::DetailsArchInsn, Insn, InsnDetail};
 use log::debug;
 
-use super::trace_emulator::regid2regindex;
-use super::trace_emulator::THUMB_TRACE_REGISTERS;
+use crate::trace_emulator::regid2regindex;
+use crate::trace_emulator::THUMB_TRACE_REGISTERS;
 
 /// Calculation of hamming weight (i.e. number of 1-bits in value)
 pub fn hamming_weight(value: u32) -> u32 {

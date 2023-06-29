@@ -6,10 +6,6 @@
 
 use std::io::Read;
 
-use super::asmutils::disassemble;
-use super::communication::Communication;
-use super::communication::SimpleSerial;
-use super::error::TraceEmulatorError;
 use capstone::arch::arm::ArmOperand;
 use capstone::prelude::BuildsCapstone;
 use capstone::prelude::DetailsArchInsn;
@@ -22,13 +18,17 @@ use log::{info, trace};
 use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 use unicorn_engine::{RegisterARM, Unicorn};
 
+use crate::asmutils::disassemble;
+use crate::communication::Communication;
+use crate::communication::SimpleSerial;
+use crate::error::TraceEmulatorError;
+use crate::leakage::LeakageModel;
+
 #[derive(Debug)]
 pub struct MemoryInfo {
     pub symbols: Vec<(String, u64)>,
     pub start_address: u64,
 }
-
-use super::leakage::LeakageModel;
 
 pub const THUMB_TRACE_REGISTERS: [RegisterARM; 15] = [
     RegisterARM::R0,
@@ -63,14 +63,19 @@ type Hook<L, C> = fn(&mut Unicorn<'_, ThumbTraceEmulator<L, C>>) -> bool;
 
 pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
     pub(crate) capstone: Capstone,
-    pub(crate) capturing: bool,
     pub(crate) meminfo: MemoryInfo,
     pub(crate) hooks: Vec<(u64, Hook<L, C>)>,
     pub(crate) leakage: L,
     pub(crate) communication: C,
+    pub(crate) tracing: Tracing<'a>,
+}
+
+pub struct Tracing<'a> {
+    pub(crate) capturing: bool,
     pub(crate) last_register_values: [u32; THUMB_TRACE_REGISTERS.len()],
     pub(crate) instruction: Option<OwnedInsn<'a>>,
-    pub(crate) trace: Vec<(OwnedInsn<'a>, f32)>,
+    pub(crate) trace: Vec<f32>,
+    pub(crate) instruction_trace: Vec<OwnedInsn<'a>>,
     pub(crate) max_samples: Option<u32>,
 }
 
@@ -113,7 +118,6 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     .detail(true)
                     .build()
                     .unwrap(),
-                capturing: false,
                 meminfo: MemoryInfo {
                     symbols: Vec::new(),
                     start_address: 0,
@@ -121,15 +125,23 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 hooks: Vec::new(),
                 leakage,
                 communication,
-                last_register_values: [0; THUMB_TRACE_REGISTERS.len()],
-                trace: Vec::new(),
-                instruction: None,
-                max_samples,
+                tracing: Tracing {
+                    last_register_values: [0; THUMB_TRACE_REGISTERS.len()],
+                    trace: Vec::new(),
+                    instruction_trace: Vec::new(),
+                    instruction: None,
+                    capturing: false,
+                    max_samples,
+                },
             },
         )
         .unwrap()
     }
 
+    /// Load given elffile into Emulator.
+    ///
+    /// Memory must already be mapped.
+    /// It is assumed that the very first segment starts with the reset vector.
     fn load(&mut self, elffile: &str) -> Result<(), TraceEmulatorError> {
         let mut buf = Vec::new();
         std::fs::File::open(elffile)?.read_to_end(&mut buf)?;
@@ -174,6 +186,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         Ok(())
     }
 
+    /// Register a given `Hook` at the given symbol
     fn register_hook(&mut self, symbol: &str, hook: Hook<L, C>) -> Result<(), TraceEmulatorError> {
         let data = self.get_data_mut();
         data.hooks.push((
@@ -188,6 +201,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         Ok(())
     }
 
+    /// Generic hook that is executed for _every_ instruction
     fn hook_code(emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>, address: u64, size: u32) {
         let data = emu.get_data();
 
@@ -220,27 +234,34 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
             );
         }
 
-        // Add tracepoint
-        if data.capturing
-            && (data.max_samples.is_none() || data.max_samples.unwrap() as usize > data.trace.len())
+        // Add tracepoint if capturing
+        if data.tracing.capturing
+            && (data.tracing.max_samples.is_none()
+                || data.tracing.max_samples.unwrap() as usize > data.tracing.trace.len())
         {
+            // During this hook the instruction is not executed yet.
+            // So, the corresponding register values will be updated in the next call
+            // - `instruction` and `last_register_values` belong together and refer to the already executed instruction
+            // - `next_instruction`, `register_values` belong together
+
             let register_values = THUMB_TRACE_REGISTERS.map(|r| emu.reg_read(r).unwrap() as u32);
             let next_instruction = disassemble(emu, &data.capstone, address, size as usize);
 
             let data_mut = emu.get_data_mut();
-            if let Some(instruction) = data_mut.instruction.as_deref() {
-                data_mut.trace.push((
-                    OwnedInsn::from(instruction),
-                    data_mut.leakage.calculate(
-                        instruction,
-                        &data_mut.capstone.insn_detail(instruction).unwrap(),
-                        &data_mut.last_register_values,
-                        &register_values,
-                    ),
+            if let Some(instruction) = data_mut.tracing.instruction.as_deref() {
+                data_mut
+                    .tracing
+                    .instruction_trace
+                    .push(OwnedInsn::from(instruction));
+                data_mut.tracing.trace.push(data_mut.leakage.calculate(
+                    instruction,
+                    &data_mut.capstone.insn_detail(instruction).unwrap(),
+                    &data_mut.tracing.last_register_values,
+                    &register_values,
                 ));
             }
-            data_mut.last_register_values = register_values;
-            data_mut.instruction = Some(next_instruction);
+            data_mut.tracing.last_register_values = register_values;
+            data_mut.tracing.instruction = Some(next_instruction);
         }
     }
 }
@@ -304,6 +325,7 @@ pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
 
 // -----------------------------------------------------------------------------------------------
 
+/// Predefined hook that just returns from the current function by setting PC := LR
 pub fn hook_force_return<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>,
 ) -> bool {
@@ -312,46 +334,55 @@ pub fn hook_force_return<L: LeakageModel, C: Communication>(
     true
 }
 
+/// Predefined hook that start capturing a trace
 pub fn hook_trigger_high<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>,
 ) -> bool {
     hook_force_return(emu);
 
     let data = emu.get_data_mut();
-    data.capturing = true;
-    data.trace.clear();
-    data.instruction = None;
+    data.tracing.capturing = true;
+    data.tracing.trace.clear();
+    data.tracing.instruction = None;
 
     true
 }
 
+/// Predefined hook that stops capturing a trace and sends the trace
 pub fn hook_trigger_low<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>,
 ) -> bool {
     hook_force_return(emu);
 
     let data = emu.get_data_mut();
-    data.capturing = false;
+    data.tracing.capturing = false;
 
-    // if log::log_enabled!(log::Level::Info) {
-    for (i, (ins, data)) in data.trace.iter().enumerate() {
-        info!(
-            "Tracepoint {:}: {:} {:} {:}",
-            i,
-            ins.mnemonic().unwrap(),
-            ins.op_str().unwrap(),
-            data
-        );
+    if log::log_enabled!(log::Level::Info) {
+        for (i, (value, ins)) in data
+            .tracing
+            .trace
+            .iter()
+            .zip(data.tracing.instruction_trace.iter())
+            .enumerate()
+        {
+            info!(
+                "Tracepoint {:}: {:} {:} {:}",
+                i,
+                ins.mnemonic().unwrap(),
+                ins.op_str().unwrap(),
+                value
+            );
+        }
     }
-    // }
 
     let mut x: Vec<u8> = data
+        .tracing
         .trace
         .iter()
-        .flat_map(|(_, val)| (*val).to_be_bytes())
+        .flat_map(|val| (*val).to_be_bytes())
         .collect();
     // TODO: This is a bit ugly
-    if let Some(max_samples) = data.max_samples {
+    if let Some(max_samples) = data.tracing.max_samples {
         if x.len() < 4 * max_samples as usize {
             x.append(&mut vec![0; 4 * max_samples as usize - x.len()]);
         }

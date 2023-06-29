@@ -10,3 +10,7 @@ elf = "0.7.2"
 log = "0.4.19"
 simple_logger = "4.2.0"
 unicorn-engine = {version = '2.0.1', features = ['dynamic_linkage']}
+
+[dev-dependencies]
+ctor = "0.2.2"
+env_logger = "0.10.0"
