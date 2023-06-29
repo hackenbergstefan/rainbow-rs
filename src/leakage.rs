@@ -53,7 +53,7 @@ impl LeakageModel for HammingWeightLeakage {
         for operand in instruction_detail.arch_detail().arm().unwrap().operands() {
             if let ArmOperandType::Reg(r) = operand.op_type {
                 if let Some((i, reg)) = regid2regindex(r) {
-                    println!("    {:?}: {:08x}", reg, values[i]);
+                    debug!("    {:?}: {:08x}", reg, values[i]);
                     val += hamming_weight(values[i]) as f32;
                 }
             }

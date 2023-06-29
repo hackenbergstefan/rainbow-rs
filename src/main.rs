@@ -2,6 +2,9 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::path::Path;
+
+use clap::Parser;
 use log::LevelFilter;
 
 mod asmutils;
@@ -10,27 +13,58 @@ mod error;
 mod leakage;
 mod trace_emulator;
 
+#[derive(Parser, Debug)]
+#[command(version)]
+struct CmdlineArgs {
+    /// Path to elffile to read from
+    #[arg(value_parser = file_exists)]
+    elffile: String,
+    /// Host and port of communication socket
+    #[arg(short, long, default_value = "127.0.0.1:1234")]
+    socket: String,
+    /// Verbosity: `-v`: Info, `-vv`: Debug, `-vvv`: Trace
+    #[arg(
+        long,
+        short = 'v',
+        action = clap::ArgAction::Count)]
+    verbose: u8,
+}
+
+fn file_exists(s: &str) -> Result<String, String> {
+    if Path::new(s).exists() {
+        Ok(s.into())
+    } else {
+        Err(format!("File `{s}` does not exist."))
+    }
+}
+
 fn main() {
+    let args = CmdlineArgs::parse();
     simple_logger::SimpleLogger::new()
-        .with_level(LevelFilter::Debug)
+        .with_level(match args.verbose {
+            1 => LevelFilter::Info,
+            2 => LevelFilter::Debug,
+            3 => LevelFilter::Trace,
+            _ => LevelFilter::Warn,
+        })
         .init()
         .unwrap();
 
     let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
-        "./_generic_simpleserial-CWLITEARM.elf",
+        &args.elffile,
         leakage::HammingWeightLeakage::new(),
-        "127.0.0.1:1234",
+        &args.socket,
     )
     .unwrap();
     emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
         .unwrap();
 
-    for (ins, data) in emu.get_data().trace.iter() {
-        println!(
-            "{:} {:} {:}",
-            ins.mnemonic().unwrap(),
-            ins.op_str().unwrap(),
-            data
-        );
-    }
+    // for (ins, data) in emu.get_data().trace.iter() {
+    //     println!(
+    //         "{:} {:} {:}",
+    //         ins.mnemonic().unwrap(),
+    //         ins.op_str().unwrap(),
+    //         data
+    //     );
+    // }
 }
