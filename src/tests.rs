@@ -1,3 +1,7 @@
+// SPDX-FileCopyrightText: 2023 Stefan Hackenberg <mail@stefan-hackenberg.de>
+//
+// SPDX-License-Identifier: MIT
+
 use capstone::Insn;
 use capstone::InsnDetail;
 use unicorn_engine::unicorn_const::Arch;
