@@ -22,11 +22,12 @@ struct CmdlineArgs {
     /// Host and port of communication socket
     #[arg(short, long, default_value = "127.0.0.1:1234")]
     socket: String,
+    /// Record specific number of samples per trace.
+    /// If not given all instructions between `trigger_high()` and `trigger_low()` are recorded.
+    #[arg(long)]
+    samples: Option<u32>,
     /// Verbosity: `-v`: Info, `-vv`: Debug, `-vvv`: Trace
-    #[arg(
-        long,
-        short = 'v',
-        action = clap::ArgAction::Count)]
+    #[arg(long, short = 'v', action = clap::ArgAction::Count)]
     verbose: u8,
 }
 
@@ -54,17 +55,9 @@ fn main() {
         &args.elffile,
         leakage::HammingWeightLeakage::new(),
         &args.socket,
+        args.samples,
     )
     .unwrap();
     emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
         .unwrap();
-
-    // for (ins, data) in emu.get_data().trace.iter() {
-    //     println!(
-    //         "{:} {:} {:}",
-    //         ins.mnemonic().unwrap(),
-    //         ins.op_str().unwrap(),
-    //         data
-    //     );
-    // }
 }

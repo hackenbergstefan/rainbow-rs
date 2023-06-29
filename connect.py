@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: MIT
 
+import struct
 import socket
 
 from chipwhisperer.capture.targets import SimpleSerial2
@@ -25,6 +26,9 @@ class SimpleSocket2(SimpleSerial2):
         return self.sock.recv(num_char)
 
 
+number_of_samples = 4
+number_of_traces = 3
+
 if __name__ == "__main__":
     import logging
     import time
@@ -34,8 +38,13 @@ if __name__ == "__main__":
 
     sock = SimpleSocket2()
     sock.con("localhost", 1234)
+    sock.sock.settimeout(1)
     t = time.time()
-    for _ in range(1):
-        sock.simpleserial_write(0x01, 16 * b"\x01")
-        # sock.sock.recv(2)
+    for i in range(number_of_traces):
+        sock.simpleserial_write(0x01, bytes([i, i + 1]))
+        trace = struct.unpack(
+            f">{number_of_samples}f",
+            (sock.sock.recv(4 * number_of_samples)),
+        )
+        print(trace)
     print(time.time() - t)

@@ -47,7 +47,12 @@ impl LeakageModel for HammingWeightLeakage {
             "Calculate for {:} {:}",
             instruction.mnemonic().unwrap(),
             instruction.op_str().unwrap(),
-            // instruction_detail.arch_detail().arm().unwrap().operands(),
+            // instruction_detail
+            //     .arch_detail()
+            //     .arm()
+            //     .unwrap()
+            //     .operands()
+            //     .collect::<Vec<ArmOperand>>(),
         );
         let mut val = 0.0;
         for operand in instruction_detail.arch_detail().arm().unwrap().operands() {

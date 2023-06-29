@@ -18,6 +18,7 @@ use super::trace_emulator::ThumbTraceEmulator;
 pub trait Communication {
     fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError>;
     fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError>;
+    fn write_trace(&mut self, trace: &[u8]) -> Result<(), TraceEmulatorError>;
 }
 
 /// Adapter for SimpleSerial protocol over TCP Socket.
@@ -69,6 +70,12 @@ impl Communication for SimpleSerial {
     }
 
     fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError> {
+        self.stream.write_all(data)?;
+        Ok(())
+    }
+
+    fn write_trace(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError> {
+        // dbg!(data.len());
         self.stream.write_all(data)?;
         Ok(())
     }
