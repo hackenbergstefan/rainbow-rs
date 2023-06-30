@@ -66,3 +66,45 @@ impl LeakageModel for HammingWeightLeakage {
         val
     }
 }
+
+/// Hamming Distance leakage.
+/// HammingDistanceLeakage leaks the hamming distance of every changed register value
+pub struct HammingDistanceLeakage {}
+
+impl HammingDistanceLeakage {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+impl LeakageModel for HammingDistanceLeakage {
+    fn calculate(
+        &self,
+        instruction: &Insn,
+        instruction_detail: &InsnDetail,
+        last_values: &[u32; THUMB_TRACE_REGISTERS.len()],
+        values: &[u32; THUMB_TRACE_REGISTERS.len()],
+    ) -> f32 {
+        debug!(
+            "Calculate for {:} {:}",
+            instruction.mnemonic().unwrap(),
+            instruction.op_str().unwrap(),
+            // instruction_detail
+            //     .arch_detail()
+            //     .arm()
+            //     .unwrap()
+            //     .operands()
+            //     .collect::<Vec<ArmOperand>>(),
+        );
+        let mut val = 0.0;
+        for operand in instruction_detail.arch_detail().arm().unwrap().operands() {
+            if let ArmOperandType::Reg(r) = operand.op_type {
+                if let Some((i, reg)) = regid2regindex(r) {
+                    debug!("    {:?}: {:08x} ^ {:08x}", reg, values[i], last_values[i]);
+                    val += hamming_weight(values[i] ^ last_values[i]) as f32;
+                }
+            }
+        }
+        val
+    }
+}

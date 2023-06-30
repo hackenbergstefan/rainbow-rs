@@ -5,6 +5,7 @@
 use std::path::Path;
 
 use clap::Parser;
+use leakage::{HammingDistanceLeakage, HammingWeightLeakage, LeakageModel};
 use log::LevelFilter;
 
 mod asmutils;
@@ -15,6 +16,12 @@ mod trace_emulator;
 
 #[cfg(test)]
 mod tests;
+
+#[derive(Debug, Clone, clap::ValueEnum)]
+enum LeakageModels {
+    HammingWeightLeakage,
+    HammingDistanceLeakage,
+}
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -32,6 +39,9 @@ struct CmdlineArgs {
     /// Verbosity: `-v`: Info, `-vv`: Debug, `-vvv`: Trace
     #[arg(long, short = 'v', action = clap::ArgAction::Count)]
     verbose: u8,
+    /// Leakage model
+    #[arg(long, value_enum)]
+    leakage_model: LeakageModels,
 }
 
 fn file_exists(s: &str) -> Result<String, String> {
@@ -54,9 +64,13 @@ fn main() {
         .init()
         .unwrap();
 
+    let leakage: Box<dyn LeakageModel> = match args.leakage_model {
+        LeakageModels::HammingWeightLeakage => Box::new(HammingWeightLeakage::new()),
+        LeakageModels::HammingDistanceLeakage => Box::new(HammingDistanceLeakage::new()),
+    };
     let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
         &args.elffile,
-        leakage::HammingWeightLeakage::new(),
+        leakage.as_ref(),
         &args.socket,
         args.samples,
     )

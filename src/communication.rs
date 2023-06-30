@@ -11,7 +11,6 @@ use log::info;
 use unicorn_engine::{RegisterARM, Unicorn};
 
 use crate::error::TraceEmulatorError;
-use crate::leakage::LeakageModel;
 use crate::trace_emulator::hook_force_return;
 use crate::trace_emulator::ThumbTraceEmulator;
 
@@ -40,16 +39,12 @@ impl SimpleSerial {
         Ok(Self { stream })
     }
 
-    pub fn hook_init_uart<'a, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
-    ) -> bool {
+    pub fn hook_init_uart<'a>(emu: &mut Unicorn<'a, ThumbTraceEmulator<SimpleSerial>>) -> bool {
         hook_force_return(emu);
         true
     }
 
-    pub fn hook_getch<'a, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
-    ) -> bool {
+    pub fn hook_getch<'a>(emu: &mut Unicorn<'a, ThumbTraceEmulator<SimpleSerial>>) -> bool {
         match emu.get_data_mut().communication.read(1) {
             Ok(val) => {
                 emu.reg_write(RegisterARM::R0, val[0] as u64).unwrap();
