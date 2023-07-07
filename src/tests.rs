@@ -2,9 +2,6 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::sync::mpsc::channel;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::Sender;
 use std::thread;
 
 use capstone::Insn;
@@ -15,6 +12,8 @@ use unicorn_engine::unicorn_const::Permission;
 use unicorn_engine::Unicorn;
 
 use crate::communication::*;
+use crate::itc::create_itcs;
+use crate::itc::RainbowITC;
 use crate::leakage::*;
 use crate::trace_emulator::*;
 use crate::Command;
@@ -54,27 +53,14 @@ fn new_emu_dummy<'a, L: LeakageModel>(
     leakage: L,
 ) -> (
     Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>>,
-    Sender<Command>,
-    Receiver<Command>,
+    RainbowITC,
 ) {
-    let (_, cmd2emu_receiver) = channel();
-    let (emu2cmd_sender, _) = channel();
-    let (cmd2victim_sender, cmd2victim_receiver) = channel();
-    let (victim2cmd_sender, victim2cmd_receiver) = channel();
+    let (to_emu, from_emu) = create_itcs();
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<L, NullCommunication>> as ThumbTraceEmulatorTrait<
             L,
             NullCommunication,
-        >>::new(
-            Arch::ARM,
-            Mode::LITTLE_ENDIAN,
-            leakage,
-            None,
-            cmd2emu_receiver,
-            emu2cmd_sender,
-            cmd2victim_receiver,
-            victim2cmd_sender,
-        );
+        >>::new(Arch::ARM, Mode::LITTLE_ENDIAN, leakage, None, to_emu);
     emu.mem_map(0, 4096, Permission::EXEC).unwrap();
     emu.add_code_hook(
         0,
@@ -82,13 +68,13 @@ fn new_emu_dummy<'a, L: LeakageModel>(
         <Unicorn<'_, ThumbTraceEmulator<'_, L, NullCommunication>>>::hook_code,
     )
     .unwrap();
-    (emu, cmd2victim_sender, victim2cmd_receiver)
+    (emu, from_emu)
 }
 
 /// Use dummy hook to check if it is executed
 #[test]
 fn test_hooks() {
-    let (mut emu, _, _) = new_emu_dummy(NullLeakage::new());
+    let (mut emu, _) = new_emu_dummy(NullLeakage::new());
     emu.get_data_mut().hooks.push((0, |emu| {
         emu.get_data_mut().tracing.capturing = true;
         false
@@ -100,10 +86,7 @@ fn test_hooks() {
 /// Test communication with vicim by using a reflector
 #[test]
 fn test_victim_communication() {
-    let (_, cmd2emu_receiver) = channel();
-    let (emu2cmd_sender, _) = channel();
-    let (cmd2victim_sender, cmd2victim_receiver) = channel();
-    let (victim2cmd_sender, victim2cmd_receiver) = channel();
+    let (to_emu, from_emu) = create_itcs();
     thread::spawn(move || {
         let mut emu =
             <Unicorn<'_, ThumbTraceEmulator<NullLeakage, NullCommunication>> as ThumbTraceEmulatorTrait<
@@ -114,10 +97,7 @@ fn test_victim_communication() {
                 Mode::LITTLE_ENDIAN,
                 NullLeakage::new(),
                 None,
-                cmd2emu_receiver,
-                emu2cmd_sender,
-                cmd2victim_receiver,
-                victim2cmd_sender,
+                from_emu
             );
         emu.mem_map(0, 4096, Permission::EXEC).unwrap();
         emu.add_code_hook(
@@ -128,22 +108,14 @@ fn test_victim_communication() {
         .unwrap();
         emu.get_data_mut().hooks.push((0, |emu| {
             let inner = emu.get_data_mut();
-            inner
-                .victim2cmd_sender
-                .send(inner.cmd2victim_receiver.recv().unwrap())
-                .unwrap();
+            inner.itc.victim.send(inner.itc.victim.recv());
             false
         }));
         emu.emu_start(0, 4096, 0, 0).unwrap();
     });
 
-    cmd2victim_sender
-        .send(Command::VictimDataByte(0x00))
-        .unwrap();
-    assert_eq!(
-        victim2cmd_receiver.recv().unwrap(),
-        Command::VictimDataByte(0x00)
-    )
+    to_emu.victim.send(Command::VictimDataByte(0x00));
+    assert_eq!(to_emu.victim.recv(), Command::VictimDataByte(0x00))
 }
 
 mod tests_leakage {
@@ -151,7 +123,7 @@ mod tests_leakage {
 
     #[test]
     fn test_hamming_weight_leakage() {
-        let (mut emu, _, _) = new_emu_dummy(HammingWeightLeakage::new());
+        let (mut emu, _) = new_emu_dummy(HammingWeightLeakage::new());
         hook_trigger_high(&mut emu);
         emu.mem_write(
             0,

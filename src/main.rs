@@ -6,17 +6,18 @@ use std::{
     io::{BufRead, BufReader, BufWriter, Write},
     net::TcpListener,
     path::Path,
-    sync::mpsc::{channel, Receiver, Sender},
     thread,
 };
 
 use clap::Parser;
+use itc::{create_itcs, RainbowITC};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
 mod asmutils;
 mod communication;
 mod error;
+mod itc;
 mod leakage;
 mod trace_emulator;
 
@@ -66,13 +67,7 @@ impl Command {
     /// Establish communication with rainbow-rs.
     /// Communication is entirely json based over one socket with the host
     /// sending requests and rainbow-rs answering.
-    fn listen_forever(
-        socket_address: &str,
-        _cmd2emu_sender: Sender<Command>,
-        emu2cmd_receiver: Receiver<Command>,
-        cmd2victim_sender: Sender<Command>,
-        _victim2cmd_receiver: Receiver<Command>,
-    ) -> Result<(), std::io::Error> {
+    fn listen_forever(socket_address: &str, itc: RainbowITC) -> Result<(), std::io::Error> {
         let listener = TcpListener::bind(socket_address)?;
         let (stream, _) = listener.accept()?;
         stream.set_nodelay(true).unwrap();
@@ -84,11 +79,11 @@ impl Command {
             match command {
                 Command::VictimData(data) => {
                     for d in data {
-                        cmd2victim_sender.send(Command::VictimDataByte(d)).unwrap();
+                        itc.victim.send(Command::VictimDataByte(d));
                     }
                 }
                 Command::GetTrace(samples) => {
-                    let response = emu2cmd_receiver.recv().unwrap();
+                    let response = itc.emu.recv();
                     match response {
                         Command::Trace(mut trace) => {
                             while trace.len() > samples {
@@ -128,34 +123,20 @@ fn main() {
         .init()
         .unwrap();
 
-    let (cmd2emu_sender, cmd2emu_receiver) = channel();
-    let (emu2cmd_sender, emu2cmd_receiver) = channel();
-    let (cmd2victim_sender, cmd2victim_receiver) = channel();
-    let (victim2cmd_sender, victim2cmd_receiver) = channel();
-
+    let (to_emu, from_emu) = create_itcs();
     thread::spawn(move || {
         let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
             &args.elffile,
             leakage::HammingWeightLeakage::new(),
             args.samples,
-            cmd2emu_receiver,
-            emu2cmd_sender,
-            cmd2victim_receiver,
-            victim2cmd_sender,
+            from_emu,
         )
         .unwrap();
         emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
             .unwrap();
     });
 
-    Command::listen_forever(
-        &args.socket,
-        cmd2emu_sender,
-        emu2cmd_receiver,
-        cmd2victim_sender,
-        victim2cmd_receiver,
-    )
-    .unwrap();
+    Command::listen_forever(&args.socket, to_emu).unwrap();
 }
 
 #[cfg(test)]

@@ -34,7 +34,7 @@ impl SimpleSerial {
     pub fn hook_getch<'a, L: LeakageModel>(
         emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
-        if let Ok(Command::VictimDataByte(d)) = emu.get_data_mut().cmd2victim_receiver.recv() {
+        if let Command::VictimDataByte(d) = emu.get_data_mut().itc.victim.recv() {
             emu.reg_write(RegisterARM::R0, d as u64).unwrap();
             hook_force_return(emu);
             return true;
