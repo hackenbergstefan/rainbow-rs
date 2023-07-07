@@ -4,22 +4,14 @@
 
 //! Implementation of facilities communicating with `ThumbTraceEmulator`.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-
-use log::info;
 use unicorn_engine::{RegisterARM, Unicorn};
 
-use crate::error::TraceEmulatorError;
 use crate::leakage::LeakageModel;
 use crate::trace_emulator::hook_force_return;
 use crate::trace_emulator::ThumbTraceEmulator;
+use crate::Command;
 
-pub trait Communication {
-    fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError>;
-    fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError>;
-    fn write_trace(&mut self, trace: &[u8]) -> Result<(), TraceEmulatorError>;
-}
+pub trait Communication {}
 
 /// Adapter for SimpleSerial protocol over TCP Socket.
 /// ChipWhisperer™ is using
@@ -29,17 +21,9 @@ pub trait Communication {
 /// ThumbTraceEmulator can leverage binaries using SimpleSerial with this
 /// adapter to establish communication over TCP Socket.
 #[derive(Debug)]
-pub struct SimpleSerial {
-    stream: TcpStream,
-}
+pub struct SimpleSerial {}
 
 impl SimpleSerial {
-    pub fn new(socket_address: &str) -> Result<Self, std::io::Error> {
-        let listener = TcpListener::bind(socket_address)?;
-        let (stream, _) = listener.accept()?;
-        Ok(Self { stream })
-    }
-
     pub fn hook_init_uart<'a, L: LeakageModel>(
         emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
@@ -50,33 +34,13 @@ impl SimpleSerial {
     pub fn hook_getch<'a, L: LeakageModel>(
         emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
-        match emu.get_data_mut().communication.read(1) {
-            Ok(val) => {
-                emu.reg_write(RegisterARM::R0, val[0] as u64).unwrap();
-                hook_force_return(emu);
-                true
-            }
-            Err(_) => false,
+        if let Ok(Command::VictimDataByte(d)) = emu.get_data_mut().cmd2victim_receiver.recv() {
+            emu.reg_write(RegisterARM::R0, d as u64).unwrap();
+            hook_force_return(emu);
+            return true;
         }
+        false
     }
 }
 
-impl Communication for SimpleSerial {
-    fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError> {
-        let mut data = vec![0; size];
-        self.stream.read_exact(data.as_mut_slice())?;
-        info!("SimpleSerial::read {data:?}");
-        Ok(data)
-    }
-
-    fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError> {
-        self.stream.write_all(data)?;
-        Ok(())
-    }
-
-    fn write_trace(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError> {
-        // dbg!(data.len());
-        self.stream.write_all(data)?;
-        Ok(())
-    }
-}
+impl Communication for SimpleSerial {}

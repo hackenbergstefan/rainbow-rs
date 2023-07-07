@@ -5,6 +5,8 @@
 //! Implementation of an Emulator generating (side-channel) traces for Thumb based binary code.
 
 use std::io::Read;
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
 
 use capstone::arch::arm::ArmOperand;
 use capstone::prelude::BuildsCapstone;
@@ -23,6 +25,7 @@ use crate::communication::Communication;
 use crate::communication::SimpleSerial;
 use crate::error::TraceEmulatorError;
 use crate::leakage::LeakageModel;
+use crate::Command;
 
 #[derive(Debug)]
 pub struct MemoryInfo {
@@ -66,8 +69,11 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
     pub(crate) meminfo: MemoryInfo,
     pub(crate) hooks: Vec<(u64, Hook<L, C>)>,
     pub(crate) leakage: L,
-    pub(crate) communication: C,
     pub(crate) tracing: Tracing<'a>,
+    pub cmd2emu_receiver: Receiver<Command>,
+    pub emu2cmd_sender: Sender<Command>,
+    pub cmd2victim_receiver: Receiver<Command>,
+    pub victim2cmd_sender: Sender<Command>,
 }
 
 pub struct Tracing<'a> {
@@ -80,13 +86,16 @@ pub struct Tracing<'a> {
 }
 
 pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication> {
-    #[allow(clippy::new_ret_no_self)]
+    #[allow(clippy::new_ret_no_self, clippy::too_many_arguments)]
     fn new(
         arch: Arch,
         mode: Mode,
         leakage: L,
-        communication: C,
         max_samples: Option<u32>,
+        cmd2emu_receiver: Receiver<Command>,
+        emu2cmd_sender: Sender<Command>,
+        cmd2victim_receiver: Receiver<Command>,
+        victim2cmd_sender: Sender<Command>,
     ) -> Unicorn<'a, ThumbTraceEmulator<'a, L, C>>;
 
     fn load(&mut self, elffile: &str) -> Result<(), TraceEmulatorError>;
@@ -103,8 +112,11 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         arch: Arch,
         mode: Mode,
         leakage: L,
-        communication: C,
         max_samples: Option<u32>,
+        cmd2emu_receiver: Receiver<Command>,
+        emu2cmd_sender: Sender<Command>,
+        cmd2victim_receiver: Receiver<Command>,
+        victim2cmd_sender: Sender<Command>,
     ) -> Unicorn<'a, ThumbTraceEmulator<'a, L, C>> {
         assert!(arch == Arch::ARM && mode == Mode::LITTLE_ENDIAN);
 
@@ -124,7 +136,6 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 },
                 hooks: Vec::new(),
                 leakage,
-                communication,
                 tracing: Tracing {
                     last_register_values: [0; THUMB_TRACE_REGISTERS.len()],
                     trace: Vec::new(),
@@ -133,6 +144,10 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     capturing: false,
                     max_samples,
                 },
+                cmd2emu_receiver,
+                emu2cmd_sender,
+                cmd2victim_receiver,
+                victim2cmd_sender,
             },
         )
         .unwrap()
@@ -205,6 +220,11 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
     fn hook_code(emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>, address: u64, size: u32) {
         let data = emu.get_data();
 
+        // Check for data from Command
+        // if data.cmd2emu_receiver.try_recv().is_ok() {
+        //     todo!();
+        // }
+
         // Execute hook if present
         for (hook_addr, hook_func) in &data.hooks {
             if address == hook_addr & !1 {
@@ -270,8 +290,11 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
 pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
     elffile: &str,
     leakage: L,
-    socket_address: &str,
     max_samples: Option<u32>,
+    cmd2emu_receiver: Receiver<Command>,
+    emu2cmd_sender: Sender<Command>,
+    cmd2victim_receiver: Receiver<Command>,
+    victim2cmd_sender: Sender<Command>,
 ) -> Result<Unicorn<'a, ThumbTraceEmulator<'a, L, SimpleSerial>>, TraceEmulatorError> {
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<'a, L, SimpleSerial>> as ThumbTraceEmulatorTrait<
@@ -282,8 +305,11 @@ pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
             Arch::ARM,
             Mode::LITTLE_ENDIAN,
             leakage,
-            SimpleSerial::new(socket_address)?,
             max_samples,
+            cmd2emu_receiver,
+            emu2cmd_sender,
+            cmd2victim_receiver,
+            victim2cmd_sender,
         );
 
     // Set memory map
@@ -357,35 +383,10 @@ pub fn hook_trigger_low<L: LeakageModel, C: Communication>(
     let data = emu.get_data_mut();
     data.tracing.capturing = false;
 
-    if log::log_enabled!(log::Level::Info) {
-        for (i, (value, ins)) in data
-            .tracing
-            .trace
-            .iter()
-            .zip(data.tracing.instruction_trace.iter())
-            .enumerate()
-        {
-            info!(
-                "Tracepoint {:}: {:} {:} {:}",
-                i,
-                ins.mnemonic().unwrap(),
-                ins.op_str().unwrap(),
-                value
-            );
-        }
-    }
-
-    let mut x: Vec<u8> = data
-        .tracing
-        .trace
-        .iter()
-        .flat_map(|val| (*val).to_be_bytes())
-        .collect();
-    // TODO: This is a bit ugly
-    if let Some(max_samples) = data.tracing.max_samples {
-        if x.len() < 4 * max_samples as usize {
-            x.append(&mut vec![0; 4 * max_samples as usize - x.len()]);
-        }
-    }
-    data.communication.write_trace(&x).is_ok()
+    // let mut trace = Vec::new();
+    // std::mem::swap(&mut trace, &mut data.tracing.trace);
+    data.emu2cmd_sender
+        .send(Command::Trace(data.tracing.trace.clone()))
+        .unwrap();
+    true
 }

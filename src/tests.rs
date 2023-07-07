@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::sync::mpsc::channel;
+
 use capstone::Insn;
 use capstone::InsnDetail;
 use unicorn_engine::unicorn_const::Arch;
@@ -10,7 +12,6 @@ use unicorn_engine::unicorn_const::Permission;
 use unicorn_engine::Unicorn;
 
 use crate::communication::*;
-use crate::error::*;
 use crate::leakage::*;
 use crate::trace_emulator::*;
 
@@ -22,25 +23,7 @@ fn init() {
 /// Communication stub. For testing.
 pub struct NullCommunication {}
 
-impl NullCommunication {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
-impl Communication for NullCommunication {
-    fn read(&mut self, _size: usize) -> Result<Vec<u8>, TraceEmulatorError> {
-        Ok(Vec::new())
-    }
-
-    fn write(&mut self, _data: &[u8]) -> Result<(), TraceEmulatorError> {
-        Ok(())
-    }
-
-    fn write_trace(&mut self, _trace: &[u8]) -> Result<(), TraceEmulatorError> {
-        Ok(())
-    }
-}
+impl Communication for NullCommunication {}
 
 /// Null leakage. For testing
 pub struct NullLeakage {}
@@ -66,6 +49,10 @@ impl LeakageModel for NullLeakage {
 fn new_emu_dummy<'a, L: LeakageModel>(
     leakage: L,
 ) -> Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>> {
+    let (_, cmd2emu_receiver) = channel();
+    let (emu2cmd_sender, _) = channel();
+    let (_, cmd2victim_receiver) = channel();
+    let (victim2cmd_sender, _) = channel();
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<L, NullCommunication>> as ThumbTraceEmulatorTrait<
             L,
@@ -74,8 +61,11 @@ fn new_emu_dummy<'a, L: LeakageModel>(
             Arch::ARM,
             Mode::LITTLE_ENDIAN,
             leakage,
-            NullCommunication::new(),
             None,
+            cmd2emu_receiver,
+            emu2cmd_sender,
+            cmd2victim_receiver,
+            victim2cmd_sender,
         );
     emu.mem_map(0, 4096, Permission::EXEC).unwrap();
     emu.add_code_hook(

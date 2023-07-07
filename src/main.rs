@@ -2,10 +2,17 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::path::Path;
+use std::{
+    io::{BufRead, BufReader, BufWriter, Write},
+    net::TcpListener,
+    path::Path,
+    sync::mpsc::{channel, Receiver, Sender},
+    thread,
+};
 
 use clap::Parser;
 use log::LevelFilter;
+use serde::{Deserialize, Serialize};
 
 mod asmutils;
 mod communication;
@@ -23,7 +30,7 @@ struct CmdlineArgs {
     #[arg(value_parser = file_exists)]
     elffile: String,
     /// Host and port of communication socket
-    #[arg(short, long, default_value = "127.0.0.1:1234")]
+    #[arg(short, long, default_value = "127.0.0.1:6666")]
     socket: String,
     /// Record specific number of samples per trace.
     /// If not given all instructions between `trigger_high()` and `trigger_low()` are recorded.
@@ -42,6 +49,73 @@ fn file_exists(s: &str) -> Result<String, String> {
     }
 }
 
+/// Enum holding commands for communication with rainbow-rs
+#[derive(Serialize, Deserialize, Debug)]
+pub enum Command {
+    /// Request to receive the last captured trace.
+    GetTrace(usize),
+    /// Answer to `GetTrace`.
+    Trace(Vec<f32>),
+    /// Data to be passed to "victim".
+    VictimData(Vec<u8>),
+    /// Bytewise data to be passed to "victim". Internal use only.
+    VictimDataByte(u8),
+}
+
+impl Command {
+    /// Establish communication with rainbow-rs.
+    /// Communication is entirely json based over one socket with the host
+    /// sending requests and rainbow-rs answering.
+    fn listen_forever(
+        socket_address: &str,
+        _cmd2emu_sender: Sender<Command>,
+        emu2cmd_receiver: Receiver<Command>,
+        cmd2victim_sender: Sender<Command>,
+        _victim2cmd_receiver: Receiver<Command>,
+    ) -> Result<(), std::io::Error> {
+        let listener = TcpListener::bind(socket_address)?;
+        let (stream, _) = listener.accept()?;
+        stream.set_nodelay(true).unwrap();
+        let stream_reader = BufReader::new(&stream);
+        let mut stream_writer = BufWriter::new(&stream);
+
+        for line in stream_reader.lines() {
+            let command: Command = serde_json::from_str(&line?)?;
+            match command {
+                Command::VictimData(data) => {
+                    for d in data {
+                        cmd2victim_sender.send(Command::VictimDataByte(d)).unwrap();
+                    }
+                }
+                Command::GetTrace(samples) => {
+                    let response = emu2cmd_receiver.recv().unwrap();
+                    match response {
+                        Command::Trace(mut trace) => {
+                            while trace.len() > samples {
+                                trace.pop();
+                            }
+                            while trace.len() < samples {
+                                trace.push(0.0);
+                            }
+
+                            stream_writer.write_all(
+                                serde_json::to_string(&Command::Trace(trace))
+                                    .unwrap()
+                                    .as_bytes(),
+                            )?;
+                            stream_writer.write_all(b"\n")?;
+                            stream_writer.flush()?;
+                        }
+                        _ => panic!(),
+                    }
+                }
+                _ => todo!(),
+            }
+        }
+        Ok(())
+    }
+}
+
 fn main() {
     let args = CmdlineArgs::parse();
     simple_logger::SimpleLogger::new()
@@ -54,15 +128,34 @@ fn main() {
         .init()
         .unwrap();
 
-    let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
-        &args.elffile,
-        leakage::HammingWeightLeakage::new(),
+    let (cmd2emu_sender, cmd2emu_receiver) = channel();
+    let (emu2cmd_sender, emu2cmd_receiver) = channel();
+    let (cmd2victim_sender, cmd2victim_receiver) = channel();
+    let (victim2cmd_sender, victim2cmd_receiver) = channel();
+
+    thread::spawn(move || {
+        let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
+            &args.elffile,
+            leakage::HammingWeightLeakage::new(),
+            args.samples,
+            cmd2emu_receiver,
+            emu2cmd_sender,
+            cmd2victim_receiver,
+            victim2cmd_sender,
+        )
+        .unwrap();
+        emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
+            .unwrap();
+    });
+
+    Command::listen_forever(
         &args.socket,
-        args.samples,
+        cmd2emu_sender,
+        emu2cmd_receiver,
+        cmd2victim_sender,
+        victim2cmd_receiver,
     )
     .unwrap();
-    emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
-        .unwrap();
 }
 
 #[cfg(test)]
