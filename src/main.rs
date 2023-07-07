@@ -50,7 +50,7 @@ fn file_exists(s: &str) -> Result<String, String> {
 }
 
 /// Enum holding commands for communication with rainbow-rs
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum Command {
     /// Request to receive the last captured trace.
     GetTrace(usize),
