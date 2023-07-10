@@ -10,7 +10,7 @@ use std::{
 };
 
 use clap::Parser;
-use itc::{create_itcs, RainbowITC};
+use itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
@@ -59,56 +59,52 @@ pub enum Command {
     Trace(Vec<f32>),
     /// Data to be passed to "victim".
     VictimData(Vec<u8>),
-    /// Bytewise data to be passed to "victim". Internal use only.
-    VictimDataByte(u8),
 }
 
-impl Command {
-    /// Establish communication with rainbow-rs.
-    /// Communication is entirely json based over one socket with the host
-    /// sending requests and rainbow-rs answering.
-    fn listen_forever(socket_address: &str, itc: RainbowITC) -> Result<(), std::io::Error> {
-        let listener = TcpListener::bind(socket_address)?;
-        let (stream, _) = listener.accept()?;
-        stream.set_nodelay(true).unwrap();
-        let stream_reader = BufReader::new(&stream);
-        let mut stream_writer = BufWriter::new(&stream);
+/// Establish communication with rainbow-rs.
+/// Communication is entirely json based over one socket with the host
+/// sending requests and rainbow-rs answering.
+fn listen_forever(
+    socket_address: &str,
+    itc: BiChannel<ITCRequest, ITCResponse>,
+) -> Result<(), std::io::Error> {
+    let listener = TcpListener::bind(socket_address)?;
+    let (stream, _) = listener.accept()?;
+    stream.set_nodelay(true).unwrap();
+    let stream_reader = BufReader::new(&stream);
+    let mut stream_writer = BufWriter::new(&stream);
 
-        for line in stream_reader.lines() {
-            let command: Command = serde_json::from_str(&line?)?;
-            match command {
-                Command::VictimData(data) => {
-                    for d in data {
-                        itc.victim.send(Command::VictimDataByte(d));
-                    }
-                }
-                Command::GetTrace(samples) => {
-                    let response = itc.emu.recv();
-                    match response {
-                        Command::Trace(mut trace) => {
-                            while trace.len() > samples {
-                                trace.pop();
-                            }
-                            while trace.len() < samples {
-                                trace.push(0.0);
-                            }
-
-                            stream_writer.write_all(
-                                serde_json::to_string(&Command::Trace(trace))
-                                    .unwrap()
-                                    .as_bytes(),
-                            )?;
-                            stream_writer.write_all(b"\n")?;
-                            stream_writer.flush()?;
-                        }
-                        _ => panic!(),
-                    }
-                }
-                _ => todo!(),
+    for line in stream_reader.lines() {
+        let command: Command = serde_json::from_str(&line?)?;
+        match command {
+            Command::VictimData(data) => {
+                itc.send(ITCRequest::VictimData(data));
             }
+            Command::GetTrace(samples) => {
+                itc.send(ITCRequest::GetTrace(samples));
+                match itc.recv().unwrap() {
+                    ITCResponse::Trace(mut trace) => {
+                        while trace.len() > samples {
+                            trace.pop();
+                        }
+                        while trace.len() < samples {
+                            trace.push(0.0);
+                        }
+
+                        stream_writer.write_all(
+                            serde_json::to_string(&Command::Trace(trace))
+                                .unwrap()
+                                .as_bytes(),
+                        )?;
+                        stream_writer.write_all(b"\n")?;
+                        stream_writer.flush()?;
+                    }
+                }
+            }
+            _ => todo!(),
         }
-        Ok(())
     }
+    Ok(())
 }
 
 fn main() {
@@ -123,20 +119,20 @@ fn main() {
         .init()
         .unwrap();
 
-    let (to_emu, from_emu) = create_itcs();
+    let (server, client) = create_inter_thread_channels();
     thread::spawn(move || {
         let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
             &args.elffile,
             leakage::HammingWeightLeakage::new(),
             args.samples,
-            from_emu,
+            client,
         )
         .unwrap();
         emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
             .unwrap();
     });
 
-    Command::listen_forever(&args.socket, to_emu).unwrap();
+    let _ = listen_forever(&args.socket, server);
 }
 
 #[cfg(test)]

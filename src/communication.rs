@@ -4,14 +4,17 @@
 
 //! Implementation of facilities communicating with `ThumbTraceEmulator`.
 
+use std::collections::VecDeque;
+
 use unicorn_engine::{RegisterARM, Unicorn};
 
 use crate::leakage::LeakageModel;
 use crate::trace_emulator::hook_force_return;
 use crate::trace_emulator::ThumbTraceEmulator;
-use crate::Command;
 
-pub trait Communication {}
+pub trait Communication {
+    fn write(&mut self, data: Vec<u8>);
+}
 
 /// Adapter for SimpleSerial protocol over TCP Socket.
 /// ChipWhisperer™ is using
@@ -21,26 +24,43 @@ pub trait Communication {}
 /// ThumbTraceEmulator can leverage binaries using SimpleSerial with this
 /// adapter to establish communication over TCP Socket.
 #[derive(Debug)]
-pub struct SimpleSerial {}
+pub struct SimpleSerial {
+    data: VecDeque<u8>,
+}
 
 impl SimpleSerial {
-    pub fn hook_init_uart<'a, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
+    pub fn new() -> Self {
+        Self {
+            data: VecDeque::new(),
+        }
+    }
+
+    pub fn hook_init_uart<L: LeakageModel>(
+        emu: &mut Unicorn<'_, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
         hook_force_return(emu);
         true
     }
 
-    pub fn hook_getch<'a, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
+    pub fn hook_getch<L: LeakageModel>(
+        emu: &mut Unicorn<'_, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
-        if let Command::VictimDataByte(d) = emu.get_data_mut().itc.victim.recv() {
-            emu.reg_write(RegisterARM::R0, d as u64).unwrap();
-            hook_force_return(emu);
-            return true;
+        let inner = emu.get_data_mut();
+        while inner.victim_com.data.is_empty() {
+            if !inner.process_inter_thread_communication() {
+                return false;
+            }
         }
-        false
+
+        let char = inner.victim_com.data.pop_front().unwrap();
+        emu.reg_write(RegisterARM::R0, char as u64).unwrap();
+        hook_force_return(emu);
+        true
     }
 }
 
-impl Communication for SimpleSerial {}
+impl Communication for SimpleSerial {
+    fn write(&mut self, data: Vec<u8>) {
+        self.data = VecDeque::from(data);
+    }
+}

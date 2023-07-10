@@ -10,6 +10,7 @@ edition = "2021"
 [dependencies]
 capstone = "0.11.0"
 clap = { version = "4.3.8", features = ["derive"] }
+crossbeam-channel = "0.5.8"
 elf = "0.7.2"
 log = "0.4.19"
 serde = { version = "1.0.166", features = ["derive"] }

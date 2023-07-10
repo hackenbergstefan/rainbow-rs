@@ -12,11 +12,12 @@ use unicorn_engine::unicorn_const::Permission;
 use unicorn_engine::Unicorn;
 
 use crate::communication::*;
-use crate::itc::create_itcs;
-use crate::itc::RainbowITC;
+use crate::itc::create_inter_thread_channels;
+use crate::itc::BiChannel;
+use crate::itc::ITCRequest;
+use crate::itc::ITCResponse;
 use crate::leakage::*;
 use crate::trace_emulator::*;
-use crate::Command;
 
 #[ctor::ctor]
 fn init() {
@@ -26,7 +27,9 @@ fn init() {
 /// Communication stub. For testing.
 pub struct NullCommunication {}
 
-impl Communication for NullCommunication {}
+impl Communication for NullCommunication {
+    fn write(&mut self, _data: Vec<u8>) {}
+}
 
 /// Null leakage. For testing
 pub struct NullLeakage {}
@@ -53,14 +56,21 @@ fn new_emu_dummy<'a, L: LeakageModel>(
     leakage: L,
 ) -> (
     Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>>,
-    RainbowITC,
+    BiChannel<ITCRequest, ITCResponse>,
 ) {
-    let (to_emu, from_emu) = create_itcs();
+    let (server, client) = create_inter_thread_channels();
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<L, NullCommunication>> as ThumbTraceEmulatorTrait<
             L,
             NullCommunication,
-        >>::new(Arch::ARM, Mode::LITTLE_ENDIAN, leakage, None, to_emu);
+        >>::new(
+            Arch::ARM,
+            Mode::LITTLE_ENDIAN,
+            leakage,
+            NullCommunication {},
+            None,
+            client,
+        );
     emu.mem_map(0, 4096, Permission::EXEC).unwrap();
     emu.add_code_hook(
         0,
@@ -68,7 +78,7 @@ fn new_emu_dummy<'a, L: LeakageModel>(
         <Unicorn<'_, ThumbTraceEmulator<'_, L, NullCommunication>>>::hook_code,
     )
     .unwrap();
-    (emu, from_emu)
+    (emu, server)
 }
 
 /// Use dummy hook to check if it is executed
@@ -86,18 +96,19 @@ fn test_hooks() {
 /// Test communication with vicim by using a reflector
 #[test]
 fn test_victim_communication() {
-    let (to_emu, from_emu) = create_itcs();
+    let (server, client) = create_inter_thread_channels();
     thread::spawn(move || {
         let mut emu =
-            <Unicorn<'_, ThumbTraceEmulator<NullLeakage, NullCommunication>> as ThumbTraceEmulatorTrait<
+            <Unicorn<'_, ThumbTraceEmulator<_, NullCommunication>> as ThumbTraceEmulatorTrait<
                 NullLeakage,
                 NullCommunication,
             >>::new(
                 Arch::ARM,
                 Mode::LITTLE_ENDIAN,
-                NullLeakage::new(),
+                NullLeakage {},
+                NullCommunication {},
                 None,
-                from_emu
+                client,
             );
         emu.mem_map(0, 4096, Permission::EXEC).unwrap();
         emu.add_code_hook(
@@ -108,14 +119,15 @@ fn test_victim_communication() {
         .unwrap();
         emu.get_data_mut().hooks.push((0, |emu| {
             let inner = emu.get_data_mut();
-            inner.itc.victim.send(inner.itc.victim.recv());
+            inner.itc.recv().unwrap();
+            inner.itc.send(ITCResponse::Trace(vec![0.0]));
             false
         }));
         emu.emu_start(0, 4096, 0, 0).unwrap();
     });
 
-    to_emu.victim.send(Command::VictimDataByte(0x00));
-    assert_eq!(to_emu.victim.recv(), Command::VictimDataByte(0x00))
+    server.send(ITCRequest::GetTrace(0));
+    assert_eq!(server.recv().unwrap(), ITCResponse::Trace(vec![0.0]));
 }
 
 mod tests_leakage {
