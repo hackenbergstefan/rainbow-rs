@@ -4,21 +4,17 @@
 
 //! Implementation of an Emulator generating (side-channel) traces for Thumb based binary code.
 
-use std::io::Read;
-
 use capstone::arch::arm::ArmOperand;
 use capstone::prelude::BuildsCapstone;
 use capstone::prelude::DetailsArchInsn;
 use capstone::Capstone;
-use capstone::OwnedInsn;
 use capstone::RegId;
-use elf::endian::AnyEndian;
-use elf::ElfBytes;
 use log::{info, trace};
 use unicorn_engine::unicorn_const::{Arch, HookType, Mode, Permission};
 use unicorn_engine::{RegisterARM, Unicorn};
 
 use crate::asmutils::disassemble;
+use crate::asmutils::ElfInfo;
 use crate::communication::Communication;
 use crate::communication::SimpleSerial;
 use crate::error::TraceEmulatorError;
@@ -33,7 +29,7 @@ pub struct MemoryInfo {
     pub start_address: u64,
 }
 
-pub const THUMB_TRACE_REGISTERS: [RegisterARM; 15] = [
+pub const THUMB_TRACE_REGISTERS: [RegisterARM; 16] = [
     RegisterARM::R0,
     RegisterARM::R1,
     RegisterARM::R2,
@@ -49,7 +45,7 @@ pub const THUMB_TRACE_REGISTERS: [RegisterARM; 15] = [
     RegisterARM::R12,
     RegisterARM::LR,
     RegisterARM::XPSR,
-    // RegisterARM::PC,
+    RegisterARM::PC,
     // RegisterARM::SP,
 ];
 
@@ -65,81 +61,83 @@ pub fn regid2regindex(regid: RegId) -> Option<(usize, RegisterARM)> {
 type Hook<L, C> = fn(&mut Unicorn<ThumbTraceEmulator<L, C>>) -> bool;
 
 pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
-    pub(crate) capstone: Capstone,
-    pub(crate) meminfo: MemoryInfo,
-    pub(crate) hooks: Vec<(u64, Hook<L, C>)>,
-    pub(crate) leakage: L,
-    pub(crate) tracing: Tracing<'a>,
+    elfinfo: &'a ElfInfo<'a>,
+    capstone: Capstone,
+    hooks: Vec<(u64, Hook<L, C>)>,
+    leakage: L,
+    tracing: Tracing,
     pub(crate) victim_com: C,
-    pub(crate) itc: BiChannel<ITCResponse, ITCRequest>,
+    itc: BiChannel<ITCResponse, ITCRequest>,
 }
 
-pub struct Tracing<'a> {
-    pub(crate) capturing: bool,
-    pub(crate) last_register_values: [u32; THUMB_TRACE_REGISTERS.len()],
-    pub(crate) instruction: Option<OwnedInsn<'a>>,
-    pub(crate) trace: Vec<f32>,
-    pub(crate) instruction_trace: Vec<OwnedInsn<'a>>,
-    pub(crate) max_samples: Option<u32>,
+pub struct Tracing {
+    capturing: bool,
+    register_values: Option<[u32; THUMB_TRACE_REGISTERS.len()]>,
+    trace: Vec<f32>,
+    instruction_trace: Vec<u32>,
 }
 
-pub trait ThumbTraceEmulatorTrait<L: LeakageModel, C: Communication> {
+impl Tracing {
+    fn start_capturing(&mut self) {
+        self.capturing = true;
+        self.register_values = None;
+        self.trace.clear();
+        self.instruction_trace.clear();
+    }
+
+    fn stop_capturing(&mut self) {
+        self.capturing = false;
+    }
+}
+
+pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication> {
     type D;
 
     fn new(
-        arch: Arch,
-        mode: Mode,
+        elfinfo: &'a ElfInfo<'a>,
         leakage: L,
         victim_com: C,
-        max_samples: Option<u32>,
         itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Self;
 
-    fn load(&mut self, elffile: &str) -> Result<(), TraceEmulatorError>;
+    fn load(&mut self) -> Result<(), TraceEmulatorError>;
+
+    fn start(&mut self);
 
     fn register_hook(&mut self, symbol: &str, hook: Hook<L, C>) -> Result<(), TraceEmulatorError>;
 
     fn hook_code(emu: &mut Unicorn<Self::D>, address: u64, size: u32);
 }
 
-impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
+impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
     for Unicorn<'a, ThumbTraceEmulator<'a, L, C>>
 {
     type D = ThumbTraceEmulator<'a, L, C>;
 
     fn new(
-        arch: Arch,
-        mode: Mode,
+        elfinfo: &'a ElfInfo<'a>,
         leakage: L,
         victim_com: C,
-        max_samples: Option<u32>,
         itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Self {
-        assert!(arch == Arch::ARM && mode == Mode::LITTLE_ENDIAN);
-
         Unicorn::new_with_data(
-            arch,
-            mode,
+            Arch::ARM,
+            Mode::LITTLE_ENDIAN,
             ThumbTraceEmulator {
+                elfinfo,
                 capstone: Capstone::new()
                     .arm()
                     .mode(capstone::arch::arm::ArchMode::Thumb)
                     .detail(true)
                     .build()
                     .unwrap(),
-                meminfo: MemoryInfo {
-                    symbols: Vec::new(),
-                    start_address: 0,
-                },
                 hooks: Vec::new(),
                 leakage,
                 tracing: Tracing {
-                    last_register_values: [0; THUMB_TRACE_REGISTERS.len()],
+                    register_values: None,
                     trace: Vec::new(),
                     instruction_trace: Vec::new(),
-                    instruction: None,
                     capturing: false,
-                    max_samples,
                 },
                 victim_com,
                 itc,
@@ -152,31 +150,10 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
     ///
     /// Memory must already be mapped.
     /// It is assumed that the very first segment starts with the reset vector.
-    fn load(&mut self, elffile: &str) -> Result<(), TraceEmulatorError> {
-        let mut buf = Vec::new();
-        std::fs::File::open(elffile)?.read_to_end(&mut buf)?;
-        let elffile = ElfBytes::<'_, AnyEndian>::minimal_parse(buf.as_slice())?;
-
-        {
-            let inner = self.get_data_mut();
-            inner.meminfo.symbols.clear();
-            let (symtable, strtable) = elffile.symbol_table()?.unwrap();
-            for symbol in symtable {
-                inner.meminfo.symbols.push((
-                    strtable.get(symbol.st_name as usize)?.to_owned(),
-                    symbol.st_value,
-                ));
-            }
-        }
-
-        for (i, header) in elffile
-            .segments()
-            .ok_or(TraceEmulatorError::OtherError)?
-            .iter()
-            .enumerate()
-        {
-            let program = elffile.segment_data(&header)?;
-            self.mem_write(header.p_paddr, program)?;
+    fn load(&mut self) -> Result<(), TraceEmulatorError> {
+        let inner = self.get_data();
+        for (i, (addr, program)) in inner.elfinfo.segments().enumerate() {
+            self.mem_write(addr, program)?;
             if i == 0 {
                 // Set initial register values
                 let start_addr = u32::from_le_bytes(program[4..8].try_into().unwrap()) as u64;
@@ -184,31 +161,25 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
                 self.reg_write(RegisterARM::PC, start_addr)?;
                 self.reg_write(RegisterARM::SP, initial_sp)?;
                 info!("Initial registers: PC: {start_addr:08x} SP: {initial_sp:08x}");
-                self.add_code_hook(
-                    header.p_paddr,
-                    header.p_paddr + program.len() as u64,
-                    Self::hook_code,
-                )?;
-                self.get_data_mut().meminfo.start_address = start_addr;
+                self.add_code_hook(addr, addr + program.len() as u64, Self::hook_code)?;
             }
         }
 
         Ok(())
     }
 
+    /// Start emulation at current PC
+    fn start(&mut self) {
+        self.emu_start(self.pc_read().unwrap() | 1, 0, 0, 0)
+            .unwrap();
+    }
+
     /// Register a given `Hook` at the given symbol
     fn register_hook(&mut self, symbol: &str, hook: Hook<L, C>) -> Result<(), TraceEmulatorError> {
         let inner = self.get_data_mut();
-        inner.hooks.push((
-            inner
-                .meminfo
-                .symbols
-                .iter()
-                .find(|(sym, _addr)| sym == symbol)
-                .ok_or(TraceEmulatorError::OtherError)?
-                .1,
-            hook,
-        ));
+        inner
+            .hooks
+            .push((*inner.elfinfo.symbol_map.get(symbol).unwrap(), hook));
         Ok(())
     }
 
@@ -246,33 +217,26 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
         }
 
         // Add tracepoint if capturing
-        if inner.tracing.capturing
-            && (inner.tracing.max_samples.is_none()
-                || inner.tracing.max_samples.unwrap() as usize > inner.tracing.trace.len())
-        {
-            // During this hook the instruction is not executed yet.
-            // So, the corresponding register values will be updated in the next call
-            // - `instruction` and `last_register_values` belong together and refer to the already executed instruction
-            // - `next_instruction`, `register_values` belong together
+        if inner.tracing.capturing {
+            let regs_after = THUMB_TRACE_REGISTERS.map(|r| emu.reg_read(r).unwrap() as u32);
+            if let Some(regs_before) = inner.tracing.register_values {
+                let inner_mut = emu.get_data_mut();
+                let address = regs_before[regs_before.len() - 1];
+                let instruction = inner_mut
+                    .elfinfo
+                    .instruction_map
+                    .get(&(address as u64))
+                    .unwrap();
 
-            let register_values = THUMB_TRACE_REGISTERS.map(|r| emu.reg_read(r).unwrap() as u32);
-            let next_instruction = disassemble(emu, &inner.capstone, address, size as usize);
-
-            let inner_mut = emu.get_data_mut();
-            if let Some(instruction) = inner_mut.tracing.instruction.as_deref() {
-                inner_mut
-                    .tracing
-                    .instruction_trace
-                    .push(OwnedInsn::from(instruction));
                 inner_mut.tracing.trace.push(inner_mut.leakage.calculate(
                     instruction,
                     &inner_mut.capstone.insn_detail(instruction).unwrap(),
-                    &inner_mut.tracing.last_register_values,
-                    &register_values,
+                    &regs_before,
+                    &regs_after,
                 ));
+                inner_mut.tracing.instruction_trace.push(address);
             }
-            inner_mut.tracing.last_register_values = register_values;
-            inner_mut.tracing.instruction = Some(next_instruction);
+            emu.get_data_mut().tracing.register_values = Some(regs_after);
         }
     }
 }
@@ -283,13 +247,11 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulator<'a, L, C> {
     pub fn process_inter_thread_communication(&mut self) -> bool {
         match self.itc.recv() {
             Ok(ITCRequest::GetTrace(_)) => {
-                // println!("Send GetTrace");
                 self.itc
                     .send(ITCResponse::Trace(self.tracing.trace.clone()));
                 true
             }
             Ok(ITCRequest::VictimData(data)) => {
-                // println!("Send VictimData");
                 self.victim_com.write(data);
                 true
             }
@@ -300,42 +262,40 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulator<'a, L, C> {
 
 /// Implementation of ChipWhisperer™-Lite Arm (STM32F4)
 pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
-    elffile: &str,
+    elfinfo: &'a ElfInfo<'a>,
     leakage: L,
-    max_samples: Option<u32>,
     itc: BiChannel<ITCResponse, ITCRequest>,
 ) -> Result<Unicorn<'a, ThumbTraceEmulator<'a, L, SimpleSerial>>, TraceEmulatorError> {
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<'a, L, SimpleSerial>> as ThumbTraceEmulatorTrait<
+            'a,
             L,
             SimpleSerial,
-        >>::new(
-            Arch::ARM,
-            Mode::LITTLE_ENDIAN,
-            leakage,
-            SimpleSerial::new(),
-            max_samples,
-            itc,
-        );
+        >>::new(elfinfo, leakage, SimpleSerial::new(), itc);
 
     // Set memory map
     {
-        emu.mem_map(0x0800_0000, 256 * 1024, Permission::READ | Permission::EXEC)?;
-        emu.mem_map(0x2000_0000, 40 * 1024, Permission::READ | Permission::WRITE)?;
+        emu.mem_map(0x0800_0000, 256 * 1024, Permission::READ | Permission::EXEC)
+            .unwrap();
+        emu.mem_map(0x2000_0000, 40 * 1024, Permission::READ | Permission::WRITE)
+            .unwrap();
     }
 
     // Load content
     {
-        emu.load(elffile)?;
+        emu.load().unwrap();
     }
 
     // Add hooks
     {
-        emu.register_hook("platform_init", hook_force_return)?;
-        emu.register_hook("trigger_setup", hook_force_return)?;
-        emu.register_hook("trigger_high", hook_trigger_high)?;
-        emu.register_hook("trigger_low", hook_trigger_low)?;
-        SimpleSerial::install_hooks(&mut emu)?;
+        emu.register_hook("platform_init", hook_force_return)
+            .unwrap();
+        emu.register_hook("trigger_setup", hook_force_return)
+            .unwrap();
+        emu.register_hook("trigger_high", hook_trigger_high)
+            .unwrap();
+        emu.register_hook("trigger_low", hook_trigger_low).unwrap();
+        SimpleSerial::install_hooks(&mut emu).unwrap();
     }
 
     if log::log_enabled!(log::Level::Trace) {
@@ -371,11 +331,7 @@ pub fn hook_trigger_high<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<ThumbTraceEmulator<L, C>>,
 ) -> bool {
     hook_force_return(emu);
-
-    let inner = emu.get_data_mut();
-    inner.tracing.capturing = true;
-    inner.tracing.trace.clear();
-    inner.tracing.instruction = None;
+    emu.get_data_mut().tracing.start_capturing();
 
     true
 }
@@ -385,7 +341,145 @@ pub fn hook_trigger_low<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<ThumbTraceEmulator<L, C>>,
 ) -> bool {
     hook_force_return(emu);
-    emu.get_data_mut().tracing.capturing = false;
+    emu.get_data_mut().tracing.stop_capturing();
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use std::thread;
+
+    use capstone::{Insn, InsnDetail};
+
+    use crate::{itc::create_inter_thread_channels, leakage::HammingWeightLeakage};
+
+    use super::*;
+
+    #[ctor::ctor]
+    fn init() {
+        env_logger::init();
+    }
+
+    /// Communication stub. For testing.
+    pub struct NullCommunication {}
+
+    impl Communication for NullCommunication {
+        fn write(&mut self, _data: Vec<u8>) {}
+    }
+
+    /// Null leakage. For testing
+    pub struct NullLeakage {}
+
+    impl NullLeakage {
+        pub fn new() -> Self {
+            Self {}
+        }
+    }
+
+    impl LeakageModel for NullLeakage {
+        fn calculate(
+            &self,
+            _instruction: &Insn,
+            _instruction_detail: &InsnDetail,
+            _last_values: &[u32; THUMB_TRACE_REGISTERS.len()],
+            _values: &[u32; THUMB_TRACE_REGISTERS.len()],
+        ) -> f32 {
+            0.0
+        }
+    }
+
+    pub fn new_emu_dummy<'a, L: LeakageModel>(
+        elfinfo: &'a ElfInfo<'a>,
+        leakage: L,
+    ) -> (
+        Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>>,
+        BiChannel<ITCRequest, ITCResponse>,
+    ) {
+        let (server, client) = create_inter_thread_channels();
+        let mut emu =
+        <Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>> as ThumbTraceEmulatorTrait<
+            'a,
+            L,
+            NullCommunication,
+        >>::new(elfinfo, leakage, NullCommunication {}, client);
+        emu.mem_map(0, 4096, Permission::EXEC).unwrap();
+        emu.add_code_hook(
+            0,
+            4096,
+            <Unicorn<'_, ThumbTraceEmulator<'_, L, NullCommunication>>>::hook_code,
+        )
+        .unwrap();
+        (emu, server)
+    }
+
+    /// Use dummy hook to check if it is executed
+    #[test]
+    fn test_hooks() {
+        let elfinfo = ElfInfo::new(&[0x00, 0x00]);
+        let (mut emu, _) = new_emu_dummy(&elfinfo, NullLeakage::new());
+        emu.get_data_mut().hooks.push((0, |emu| {
+            emu.get_data_mut().tracing.capturing = true;
+            false
+        }));
+        emu.emu_start(0, 4096, 0, 0).unwrap();
+        assert!(emu.get_data().tracing.capturing)
+    }
+
+    /// Test communication with victim by using a reflector
+    #[test]
+    fn test_victim_communication() {
+        let (server, client) = create_inter_thread_channels();
+        let elfinfo = ElfInfo::new(&[]);
+        thread::spawn(move || {
+            let mut emu =
+            <Unicorn<ThumbTraceEmulator<NullLeakage, NullCommunication>> as ThumbTraceEmulatorTrait<
+                NullLeakage,
+                NullCommunication,
+            >>::new(
+                &elfinfo,
+                NullLeakage {},
+                NullCommunication {},
+                client,
+            );
+            emu.mem_map(0, 4096, Permission::EXEC).unwrap();
+            emu.add_code_hook(
+                0,
+                4096,
+                <Unicorn<ThumbTraceEmulator<NullLeakage, NullCommunication>>>::hook_code,
+            )
+            .unwrap();
+            emu.get_data_mut().hooks.push((0, |emu| {
+                let inner = emu.get_data_mut();
+                inner.itc.recv().unwrap();
+                inner.itc.send(ITCResponse::Trace(vec![0.0]));
+                false
+            }));
+            emu.emu_start(0, 4096, 0, 0).unwrap();
+        });
+
+        server.send(ITCRequest::GetTrace(0));
+        assert_eq!(server.recv().unwrap(), ITCResponse::Trace(vec![0.0]));
+    }
+
+    #[test]
+    fn test_hamming_weight_leakage() {
+        let elfinfo = ElfInfo::new(&[0x00, 0x00]);
+        let (mut emu, _) = new_emu_dummy(&elfinfo, HammingWeightLeakage::new());
+        hook_trigger_high(&mut emu);
+        emu.mem_write(
+            0,
+            &[
+                0x00, 0x20, // movs r0, #0x00
+                0x03, 0x20, // movs r0, #0x03
+                0x07, 0x20, // movs r0, #0x07
+                0x0F, 0x20, // movs r0, #0x0F
+                0x00, 0xBF, // nop
+            ],
+        )
+        .unwrap();
+        emu.emu_start(1, u64::MAX, 0, 5).unwrap();
+
+        assert_eq!(emu.get_data().tracing.trace, vec![0.0, 2.0, 3.0, 4.0])
+    }
 }

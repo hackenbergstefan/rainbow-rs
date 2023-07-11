@@ -3,12 +3,14 @@
 // SPDX-License-Identifier: MIT
 
 use std::{
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Write},
     net::TcpListener,
     path::Path,
     thread,
 };
 
+use crate::trace_emulator::ThumbTraceEmulatorTrait;
+use asmutils::ElfInfo;
 use clap::Parser;
 use itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse};
 use log::LevelFilter;
@@ -119,20 +121,27 @@ fn main() {
         .init()
         .unwrap();
 
-    let (server, client) = create_inter_thread_channels();
-    thread::spawn(move || {
-        let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
-            &args.elffile,
-            leakage::HammingWeightLeakage::new(),
-            args.samples,
-            client,
-        )
+    let mut buf = Vec::new();
+    std::fs::File::open(&args.elffile)
+        .unwrap()
+        .read_to_end(&mut buf)
         .unwrap();
-        emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
-            .unwrap();
-    });
+    let elfinfo = ElfInfo::new(&buf);
 
-    let _ = listen_forever(&args.socket, server);
+    let (server, client) = create_inter_thread_channels();
+    thread::scope(|scope| {
+        scope.spawn(move || {
+            let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
+                &elfinfo,
+                leakage::HammingWeightLeakage::new(),
+                client,
+            )
+            .unwrap();
+            emu.start();
+        });
+
+        let _ = listen_forever(&args.socket, server);
+    });
 }
 
 #[cfg(test)]

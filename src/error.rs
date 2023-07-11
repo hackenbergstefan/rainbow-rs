@@ -11,7 +11,7 @@ pub enum TraceEmulatorError {
     UcErr(uc_error),
     ElfParseError(elf::ParseError),
     IoError(std::io::Error),
-    OtherError,
+    // OtherError,
 }
 
 impl fmt::Display for TraceEmulatorError {
