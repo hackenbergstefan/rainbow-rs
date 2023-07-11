@@ -158,11 +158,11 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
         let elffile = ElfBytes::<'_, AnyEndian>::minimal_parse(buf.as_slice())?;
 
         {
-            let data = self.get_data_mut();
-            data.meminfo.symbols.clear();
+            let inner = self.get_data_mut();
+            inner.meminfo.symbols.clear();
             let (symtable, strtable) = elffile.symbol_table()?.unwrap();
             for symbol in symtable {
-                data.meminfo.symbols.push((
+                inner.meminfo.symbols.push((
                     strtable.get(symbol.st_name as usize)?.to_owned(),
                     symbol.st_value,
                 ));
@@ -198,9 +198,10 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
 
     /// Register a given `Hook` at the given symbol
     fn register_hook(&mut self, symbol: &str, hook: Hook<L, C>) -> Result<(), TraceEmulatorError> {
-        let data = self.get_data_mut();
-        data.hooks.push((
-            data.meminfo
+        let inner = self.get_data_mut();
+        inner.hooks.push((
+            inner
+                .meminfo
                 .symbols
                 .iter()
                 .find(|(sym, _addr)| sym == symbol)
@@ -213,10 +214,10 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
 
     /// Generic hook that is executed for _every_ instruction
     fn hook_code(emu: &mut Unicorn<ThumbTraceEmulator<L, C>>, address: u64, size: u32) {
-        let data = emu.get_data();
+        let inner = emu.get_data();
 
         // Execute hook if present
-        for (hook_addr, hook_func) in &data.hooks {
+        for (hook_addr, hook_func) in &inner.hooks {
             if address == hook_addr & !1 {
                 info!("Execute hook at {:08x}", address);
                 if !hook_func(emu) {
@@ -228,8 +229,8 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
 
         // Log current instruction
         if log::log_enabled!(log::Level::Info) {
-            let instruction = disassemble(emu, &data.capstone, address, size as usize);
-            let detail = data.capstone.insn_detail(&instruction).unwrap();
+            let instruction = disassemble(emu, &inner.capstone, address, size as usize);
+            let detail = inner.capstone.insn_detail(&instruction).unwrap();
             info!(
                 "Executing {:08x}: {:} {:} operands: {:?}",
                 instruction.address(),
@@ -245,9 +246,9 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
         }
 
         // Add tracepoint if capturing
-        if data.tracing.capturing
-            && (data.tracing.max_samples.is_none()
-                || data.tracing.max_samples.unwrap() as usize > data.tracing.trace.len())
+        if inner.tracing.capturing
+            && (inner.tracing.max_samples.is_none()
+                || inner.tracing.max_samples.unwrap() as usize > inner.tracing.trace.len())
         {
             // During this hook the instruction is not executed yet.
             // So, the corresponding register values will be updated in the next call
@@ -255,23 +256,23 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<L, C>
             // - `next_instruction`, `register_values` belong together
 
             let register_values = THUMB_TRACE_REGISTERS.map(|r| emu.reg_read(r).unwrap() as u32);
-            let next_instruction = disassemble(emu, &data.capstone, address, size as usize);
+            let next_instruction = disassemble(emu, &inner.capstone, address, size as usize);
 
-            let data_mut = emu.get_data_mut();
-            if let Some(instruction) = data_mut.tracing.instruction.as_deref() {
-                data_mut
+            let inner_mut = emu.get_data_mut();
+            if let Some(instruction) = inner_mut.tracing.instruction.as_deref() {
+                inner_mut
                     .tracing
                     .instruction_trace
                     .push(OwnedInsn::from(instruction));
-                data_mut.tracing.trace.push(data_mut.leakage.calculate(
+                inner_mut.tracing.trace.push(inner_mut.leakage.calculate(
                     instruction,
-                    &data_mut.capstone.insn_detail(instruction).unwrap(),
-                    &data_mut.tracing.last_register_values,
+                    &inner_mut.capstone.insn_detail(instruction).unwrap(),
+                    &inner_mut.tracing.last_register_values,
                     &register_values,
                 ));
             }
-            data_mut.tracing.last_register_values = register_values;
-            data_mut.tracing.instruction = Some(next_instruction);
+            inner_mut.tracing.last_register_values = register_values;
+            inner_mut.tracing.instruction = Some(next_instruction);
         }
     }
 }
@@ -371,10 +372,10 @@ pub fn hook_trigger_high<L: LeakageModel, C: Communication>(
 ) -> bool {
     hook_force_return(emu);
 
-    let data = emu.get_data_mut();
-    data.tracing.capturing = true;
-    data.tracing.trace.clear();
-    data.tracing.instruction = None;
+    let inner = emu.get_data_mut();
+    inner.tracing.capturing = true;
+    inner.tracing.trace.clear();
+    inner.tracing.instruction = None;
 
     true
 }
