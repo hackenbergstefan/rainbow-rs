@@ -2,14 +2,22 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::path::Path;
+use std::{
+    io::{BufRead, BufReader, BufWriter, Write},
+    net::TcpListener,
+    path::Path,
+    thread,
+};
 
 use clap::Parser;
+use itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse};
 use log::LevelFilter;
+use serde::{Deserialize, Serialize};
 
 mod asmutils;
 mod communication;
 mod error;
+mod itc;
 mod leakage;
 mod trace_emulator;
 
@@ -23,7 +31,7 @@ struct CmdlineArgs {
     #[arg(value_parser = file_exists)]
     elffile: String,
     /// Host and port of communication socket
-    #[arg(short, long, default_value = "127.0.0.1:1234")]
+    #[arg(short, long, default_value = "127.0.0.1:6666")]
     socket: String,
     /// Record specific number of samples per trace.
     /// If not given all instructions between `trigger_high()` and `trigger_low()` are recorded.
@@ -42,6 +50,63 @@ fn file_exists(s: &str) -> Result<String, String> {
     }
 }
 
+/// Enum holding commands for communication with rainbow-rs
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub enum Command {
+    /// Request to receive the last captured trace.
+    GetTrace(usize),
+    /// Answer to `GetTrace`.
+    Trace(Vec<f32>),
+    /// Data to be passed to "victim".
+    VictimData(Vec<u8>),
+}
+
+/// Establish communication with rainbow-rs.
+/// Communication is entirely json based over one socket with the host
+/// sending requests and rainbow-rs answering.
+fn listen_forever(
+    socket_address: &str,
+    itc: BiChannel<ITCRequest, ITCResponse>,
+) -> Result<(), std::io::Error> {
+    let listener = TcpListener::bind(socket_address)?;
+    let (stream, _) = listener.accept()?;
+    stream.set_nodelay(true).unwrap();
+    let stream_reader = BufReader::new(&stream);
+    let mut stream_writer = BufWriter::new(&stream);
+
+    for line in stream_reader.lines() {
+        let command: Command = serde_json::from_str(&line?)?;
+        match command {
+            Command::VictimData(data) => {
+                itc.send(ITCRequest::VictimData(data));
+            }
+            Command::GetTrace(samples) => {
+                itc.send(ITCRequest::GetTrace(samples));
+                match itc.recv().unwrap() {
+                    ITCResponse::Trace(mut trace) => {
+                        while trace.len() > samples {
+                            trace.pop();
+                        }
+                        while trace.len() < samples {
+                            trace.push(0.0);
+                        }
+
+                        stream_writer.write_all(
+                            serde_json::to_string(&Command::Trace(trace))
+                                .unwrap()
+                                .as_bytes(),
+                        )?;
+                        stream_writer.write_all(b"\n")?;
+                        stream_writer.flush()?;
+                    }
+                }
+            }
+            _ => todo!(),
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let args = CmdlineArgs::parse();
     simple_logger::SimpleLogger::new()
@@ -54,15 +119,20 @@ fn main() {
         .init()
         .unwrap();
 
-    let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
-        &args.elffile,
-        leakage::HammingWeightLeakage::new(),
-        &args.socket,
-        args.samples,
-    )
-    .unwrap();
-    emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
+    let (server, client) = create_inter_thread_channels();
+    thread::spawn(move || {
+        let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
+            &args.elffile,
+            leakage::HammingWeightLeakage::new(),
+            args.samples,
+            client,
+        )
         .unwrap();
+        emu.emu_start(emu.get_data().meminfo.start_address, 0, 0, 0)
+            .unwrap();
+    });
+
+    let _ = listen_forever(&args.socket, server);
 }
 
 #[cfg(test)]

@@ -4,21 +4,16 @@
 
 //! Implementation of facilities communicating with `ThumbTraceEmulator`.
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::collections::VecDeque;
 
-use log::info;
 use unicorn_engine::{RegisterARM, Unicorn};
 
-use crate::error::TraceEmulatorError;
 use crate::leakage::LeakageModel;
 use crate::trace_emulator::hook_force_return;
 use crate::trace_emulator::ThumbTraceEmulator;
 
 pub trait Communication {
-    fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError>;
-    fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError>;
-    fn write_trace(&mut self, trace: &[u8]) -> Result<(), TraceEmulatorError>;
+    fn write(&mut self, data: Vec<u8>);
 }
 
 /// Adapter for SimpleSerial protocol over TCP Socket.
@@ -30,53 +25,42 @@ pub trait Communication {
 /// adapter to establish communication over TCP Socket.
 #[derive(Debug)]
 pub struct SimpleSerial {
-    stream: TcpStream,
+    data: VecDeque<u8>,
 }
 
 impl SimpleSerial {
-    pub fn new(socket_address: &str) -> Result<Self, std::io::Error> {
-        let listener = TcpListener::bind(socket_address)?;
-        let (stream, _) = listener.accept()?;
-        Ok(Self { stream })
+    pub fn new() -> Self {
+        Self {
+            data: VecDeque::new(),
+        }
     }
 
-    pub fn hook_init_uart<'a, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
+    pub fn hook_init_uart<L: LeakageModel>(
+        emu: &mut Unicorn<'_, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
         hook_force_return(emu);
         true
     }
 
-    pub fn hook_getch<'a, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<L, SimpleSerial>>,
+    pub fn hook_getch<L: LeakageModel>(
+        emu: &mut Unicorn<'_, ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
-        match emu.get_data_mut().communication.read(1) {
-            Ok(val) => {
-                emu.reg_write(RegisterARM::R0, val[0] as u64).unwrap();
-                hook_force_return(emu);
-                true
+        let inner = emu.get_data_mut();
+        while inner.victim_com.data.is_empty() {
+            if !inner.process_inter_thread_communication() {
+                return false;
             }
-            Err(_) => false,
         }
+
+        let char = inner.victim_com.data.pop_front().unwrap();
+        emu.reg_write(RegisterARM::R0, char as u64).unwrap();
+        hook_force_return(emu);
+        true
     }
 }
 
 impl Communication for SimpleSerial {
-    fn read(&mut self, size: usize) -> Result<Vec<u8>, TraceEmulatorError> {
-        let mut data = vec![0; size];
-        self.stream.read_exact(data.as_mut_slice())?;
-        info!("SimpleSerial::read {data:?}");
-        Ok(data)
-    }
-
-    fn write(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError> {
-        self.stream.write_all(data)?;
-        Ok(())
-    }
-
-    fn write_trace(&mut self, data: &[u8]) -> Result<(), TraceEmulatorError> {
-        // dbg!(data.len());
-        self.stream.write_all(data)?;
-        Ok(())
+    fn write(&mut self, data: Vec<u8>) {
+        self.data = VecDeque::from(data);
     }
 }

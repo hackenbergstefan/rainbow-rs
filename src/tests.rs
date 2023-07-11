@@ -2,6 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
+use std::thread;
+
 use capstone::Insn;
 use capstone::InsnDetail;
 use unicorn_engine::unicorn_const::Arch;
@@ -10,7 +12,10 @@ use unicorn_engine::unicorn_const::Permission;
 use unicorn_engine::Unicorn;
 
 use crate::communication::*;
-use crate::error::*;
+use crate::itc::create_inter_thread_channels;
+use crate::itc::BiChannel;
+use crate::itc::ITCRequest;
+use crate::itc::ITCResponse;
 use crate::leakage::*;
 use crate::trace_emulator::*;
 
@@ -22,24 +27,8 @@ fn init() {
 /// Communication stub. For testing.
 pub struct NullCommunication {}
 
-impl NullCommunication {
-    pub fn new() -> Self {
-        Self {}
-    }
-}
-
 impl Communication for NullCommunication {
-    fn read(&mut self, _size: usize) -> Result<Vec<u8>, TraceEmulatorError> {
-        Ok(Vec::new())
-    }
-
-    fn write(&mut self, _data: &[u8]) -> Result<(), TraceEmulatorError> {
-        Ok(())
-    }
-
-    fn write_trace(&mut self, _trace: &[u8]) -> Result<(), TraceEmulatorError> {
-        Ok(())
-    }
+    fn write(&mut self, _data: Vec<u8>) {}
 }
 
 /// Null leakage. For testing
@@ -65,7 +54,11 @@ impl LeakageModel for NullLeakage {
 
 fn new_emu_dummy<'a, L: LeakageModel>(
     leakage: L,
-) -> Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>> {
+) -> (
+    Unicorn<'a, ThumbTraceEmulator<'a, L, NullCommunication>>,
+    BiChannel<ITCRequest, ITCResponse>,
+) {
+    let (server, client) = create_inter_thread_channels();
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<L, NullCommunication>> as ThumbTraceEmulatorTrait<
             L,
@@ -74,8 +67,9 @@ fn new_emu_dummy<'a, L: LeakageModel>(
             Arch::ARM,
             Mode::LITTLE_ENDIAN,
             leakage,
-            NullCommunication::new(),
+            NullCommunication {},
             None,
+            client,
         );
     emu.mem_map(0, 4096, Permission::EXEC).unwrap();
     emu.add_code_hook(
@@ -84,13 +78,13 @@ fn new_emu_dummy<'a, L: LeakageModel>(
         <Unicorn<'_, ThumbTraceEmulator<'_, L, NullCommunication>>>::hook_code,
     )
     .unwrap();
-    emu
+    (emu, server)
 }
 
-// Use dummy hook to check if it is executed
+/// Use dummy hook to check if it is executed
 #[test]
 fn test_hooks() {
-    let mut emu = new_emu_dummy(NullLeakage::new());
+    let (mut emu, _) = new_emu_dummy(NullLeakage::new());
     emu.get_data_mut().hooks.push((0, |emu| {
         emu.get_data_mut().tracing.capturing = true;
         false
@@ -99,12 +93,49 @@ fn test_hooks() {
     assert!(emu.get_data().tracing.capturing)
 }
 
+/// Test communication with vicim by using a reflector
+#[test]
+fn test_victim_communication() {
+    let (server, client) = create_inter_thread_channels();
+    thread::spawn(move || {
+        let mut emu =
+            <Unicorn<'_, ThumbTraceEmulator<_, NullCommunication>> as ThumbTraceEmulatorTrait<
+                NullLeakage,
+                NullCommunication,
+            >>::new(
+                Arch::ARM,
+                Mode::LITTLE_ENDIAN,
+                NullLeakage {},
+                NullCommunication {},
+                None,
+                client,
+            );
+        emu.mem_map(0, 4096, Permission::EXEC).unwrap();
+        emu.add_code_hook(
+            0,
+            4096,
+            <Unicorn<'_, ThumbTraceEmulator<'_, NullLeakage, NullCommunication>>>::hook_code,
+        )
+        .unwrap();
+        emu.get_data_mut().hooks.push((0, |emu| {
+            let inner = emu.get_data_mut();
+            inner.itc.recv().unwrap();
+            inner.itc.send(ITCResponse::Trace(vec![0.0]));
+            false
+        }));
+        emu.emu_start(0, 4096, 0, 0).unwrap();
+    });
+
+    server.send(ITCRequest::GetTrace(0));
+    assert_eq!(server.recv().unwrap(), ITCResponse::Trace(vec![0.0]));
+}
+
 mod tests_leakage {
     use super::*;
 
     #[test]
     fn test_hamming_weight_leakage() {
-        let mut emu = new_emu_dummy(HammingWeightLeakage::new());
+        let (mut emu, _) = new_emu_dummy(HammingWeightLeakage::new());
         hook_trigger_high(&mut emu);
         emu.mem_write(
             0,

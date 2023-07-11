@@ -22,6 +22,9 @@ use crate::asmutils::disassemble;
 use crate::communication::Communication;
 use crate::communication::SimpleSerial;
 use crate::error::TraceEmulatorError;
+use crate::itc::BiChannel;
+use crate::itc::ITCRequest;
+use crate::itc::ITCResponse;
 use crate::leakage::LeakageModel;
 
 #[derive(Debug)]
@@ -66,8 +69,9 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
     pub(crate) meminfo: MemoryInfo,
     pub(crate) hooks: Vec<(u64, Hook<L, C>)>,
     pub(crate) leakage: L,
-    pub(crate) communication: C,
     pub(crate) tracing: Tracing<'a>,
+    pub(crate) victim_com: C,
+    pub(crate) itc: BiChannel<ITCResponse, ITCRequest>,
 }
 
 pub struct Tracing<'a> {
@@ -85,8 +89,9 @@ pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication> {
         arch: Arch,
         mode: Mode,
         leakage: L,
-        communication: C,
+        victim_com: C,
         max_samples: Option<u32>,
+        itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Unicorn<'a, ThumbTraceEmulator<'a, L, C>>;
 
     fn load(&mut self, elffile: &str) -> Result<(), TraceEmulatorError>;
@@ -94,6 +99,8 @@ pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication> {
     fn register_hook(&mut self, symbol: &str, hook: Hook<L, C>) -> Result<(), TraceEmulatorError>;
 
     fn hook_code(emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>, address: u64, size: u32);
+
+    // fn process_inter_thread_communication(&mut self);
 }
 
 impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
@@ -103,8 +110,9 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         arch: Arch,
         mode: Mode,
         leakage: L,
-        communication: C,
+        victim_com: C,
         max_samples: Option<u32>,
+        itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Unicorn<'a, ThumbTraceEmulator<'a, L, C>> {
         assert!(arch == Arch::ARM && mode == Mode::LITTLE_ENDIAN);
 
@@ -124,7 +132,6 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 },
                 hooks: Vec::new(),
                 leakage,
-                communication,
                 tracing: Tracing {
                     last_register_values: [0; THUMB_TRACE_REGISTERS.len()],
                     trace: Vec::new(),
@@ -133,6 +140,8 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     capturing: false,
                     max_samples,
                 },
+                victim_com,
+                itc,
             },
         )
         .unwrap()
@@ -266,12 +275,33 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
     }
 }
 
+impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulator<'a, L, C> {
+    /// Blocking function to process requests from main thread.
+    /// Shall be called in an idle-loop of victim execution. E.g. `SimpleSerial::getch`.
+    pub fn process_inter_thread_communication(&mut self) -> bool {
+        match self.itc.recv() {
+            Ok(ITCRequest::GetTrace(_)) => {
+                // println!("Send GetTrace");
+                self.itc
+                    .send(ITCResponse::Trace(self.tracing.trace.clone()));
+                true
+            }
+            Ok(ITCRequest::VictimData(data)) => {
+                // println!("Send VictimData");
+                self.victim_com.write(data);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+}
+
 /// Implementation of ChipWhisperer™-Lite Arm (STM32F4)
 pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
     elffile: &str,
     leakage: L,
-    socket_address: &str,
     max_samples: Option<u32>,
+    itc: BiChannel<ITCResponse, ITCRequest>,
 ) -> Result<Unicorn<'a, ThumbTraceEmulator<'a, L, SimpleSerial>>, TraceEmulatorError> {
     let mut emu =
         <Unicorn<'a, ThumbTraceEmulator<'a, L, SimpleSerial>> as ThumbTraceEmulatorTrait<
@@ -282,8 +312,9 @@ pub fn new_simpleserialsocket_stm32f4<'a, L: LeakageModel>(
             Arch::ARM,
             Mode::LITTLE_ENDIAN,
             leakage,
-            SimpleSerial::new(socket_address)?,
+            SimpleSerial::new(),
             max_samples,
+            itc,
         );
 
     // Set memory map
@@ -331,6 +362,7 @@ pub fn hook_force_return<L: LeakageModel, C: Communication>(
 ) -> bool {
     let lr = emu.reg_read(RegisterARM::LR).unwrap();
     emu.set_pc(lr).unwrap();
+
     true
 }
 
@@ -353,39 +385,7 @@ pub fn hook_trigger_low<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<'_, ThumbTraceEmulator<L, C>>,
 ) -> bool {
     hook_force_return(emu);
+    emu.get_data_mut().tracing.capturing = false;
 
-    let data = emu.get_data_mut();
-    data.tracing.capturing = false;
-
-    if log::log_enabled!(log::Level::Info) {
-        for (i, (value, ins)) in data
-            .tracing
-            .trace
-            .iter()
-            .zip(data.tracing.instruction_trace.iter())
-            .enumerate()
-        {
-            info!(
-                "Tracepoint {:}: {:} {:} {:}",
-                i,
-                ins.mnemonic().unwrap(),
-                ins.op_str().unwrap(),
-                value
-            );
-        }
-    }
-
-    let mut x: Vec<u8> = data
-        .tracing
-        .trace
-        .iter()
-        .flat_map(|val| (*val).to_be_bytes())
-        .collect();
-    // TODO: This is a bit ugly
-    if let Some(max_samples) = data.tracing.max_samples {
-        if x.len() < 4 * max_samples as usize {
-            x.append(&mut vec![0; 4 * max_samples as usize - x.len()]);
-        }
-    }
-    data.communication.write_trace(&x).is_ok()
+    true
 }
