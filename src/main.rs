@@ -84,7 +84,7 @@ fn listen_forever(
                 itc.send(ITCRequest::GetTrace(samples));
                 match itc.recv().unwrap() {
                     ITCResponse::Trace(mut trace) => {
-                        while trace.len() > samples {
+                        while samples > 0 && trace.len() > samples {
                             trace.pop();
                         }
                         while trace.len() < samples {
