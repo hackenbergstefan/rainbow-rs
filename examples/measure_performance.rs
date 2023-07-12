@@ -23,23 +23,23 @@ pub enum SocketCommand {
     VictimData(Vec<u8>),
 }
 
-fn measure(prog: &str, runs: usize, _threads: u32) -> (u128, usize) {
+fn measure(prog: &str, runs: usize, threads: usize) -> (u128, usize) {
     let mut prog = Command::new("cargo")
         .arg("run")
         .arg("--release")
         .arg("--bin=rainbow-rs")
         .arg("--quiet")
         .arg("--")
-        // .arg(format!("--threads={:}", threads))
+        .arg(format!("--threads={:}", threads))
         .arg(prog)
         .spawn()
         .unwrap();
-    thread::sleep(Duration::from_millis(100));
+    thread::sleep(Duration::from_millis(500));
 
     let mut samples_read = 0usize;
     let now = SystemTime::now();
     {
-        let stream = TcpStream::connect("localhost:6666").unwrap();
+        let stream = TcpStream::connect(("127.0.0.1", 6666)).unwrap();
         stream.set_nodelay(true).unwrap();
         let mut writer = BufWriter::new(&stream);
         let mut reader = BufReader::new(&stream);
@@ -92,19 +92,37 @@ fn main() {
         .output()
         .unwrap();
 
+    let num_cpu = num_cpus::get();
+
     // Start measurements
     measure!("examples/cwlitearm_xor.elf", 1, 1);
     measure!("examples/cwlitearm_xor.elf", 10000, 1);
+    measure!("examples/cwlitearm_xor.elf", 10000, num_cpu / 2);
+    measure!("examples/cwlitearm_xor.elf", 10000, num_cpu);
 
     measure!("examples/cwlitearm_loop_1000.elf", 1, 1);
     measure!("examples/cwlitearm_loop_1000.elf", 1000, 1);
+    measure!("examples/cwlitearm_loop_1000.elf", 1000, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_1000.elf", 1000, num_cpu);
+    measure!("examples/cwlitearm_loop_1000.elf", 10000, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_1000.elf", 10000, num_cpu);
 
     measure!("examples/cwlitearm_loop_10000.elf", 1, 1);
     measure!("examples/cwlitearm_loop_10000.elf", 1000, 1);
+    measure!("examples/cwlitearm_loop_10000.elf", 1000, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_10000.elf", 1000, num_cpu);
+    measure!("examples/cwlitearm_loop_10000.elf", 10000, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_10000.elf", 10000, num_cpu);
 
     measure!("examples/cwlitearm_loop_100000.elf", 1, 1);
     measure!("examples/cwlitearm_loop_100000.elf", 100, 1);
+    measure!("examples/cwlitearm_loop_100000.elf", 100, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_100000.elf", 100, num_cpu);
 
     measure!("examples/cwlitearm_loop_1000000.elf", 1, 1);
     measure!("examples/cwlitearm_loop_1000000.elf", 10, 1);
+    measure!("examples/cwlitearm_loop_1000000.elf", 10, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_1000000.elf", 10, num_cpu);
+    measure!("examples/cwlitearm_loop_1000000.elf", 100, num_cpu / 2);
+    measure!("examples/cwlitearm_loop_1000000.elf", 100, num_cpu);
 }
