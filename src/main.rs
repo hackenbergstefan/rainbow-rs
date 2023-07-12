@@ -39,6 +39,9 @@ struct CmdlineArgs {
     /// If not given all instructions between `trigger_high()` and `trigger_low()` are recorded.
     #[arg(long)]
     samples: Option<u32>,
+    /// Number of threads
+    #[arg(long, default_value = "1")]
+    threads: u32,
     /// Verbosity: `-v`: Info, `-vv`: Debug, `-vvv`: Trace
     #[arg(long, short = 'v', action = clap::ArgAction::Count)]
     verbose: u8,
@@ -82,27 +85,24 @@ fn listen_forever(
             Command::VictimData(data) => {
                 itc.send(ITCRequest::VictimData(data));
             }
-            Command::GetTrace(samples) => {
-                itc.send(ITCRequest::GetTrace(samples));
-                match itc.recv().unwrap() {
-                    ITCResponse::Trace(mut trace) => {
-                        while samples > 0 && trace.len() > samples {
-                            trace.pop();
-                        }
-                        while trace.len() < samples {
-                            trace.push(0.0);
-                        }
-
-                        stream_writer.write_all(
-                            serde_json::to_string(&Command::Trace(trace))
-                                .unwrap()
-                                .as_bytes(),
-                        )?;
-                        stream_writer.write_all(b"\n")?;
-                        stream_writer.flush()?;
+            Command::GetTrace(samples) => match itc.recv().unwrap() {
+                ITCResponse::Trace(mut trace) => {
+                    while samples > 0 && trace.len() > samples {
+                        trace.pop();
                     }
+                    while trace.len() < samples {
+                        trace.push(0.0);
+                    }
+
+                    stream_writer.write_all(
+                        serde_json::to_string(&Command::Trace(trace))
+                            .unwrap()
+                            .as_bytes(),
+                    )?;
+                    stream_writer.write_all(b"\n")?;
+                    stream_writer.flush()?;
                 }
-            }
+            },
             _ => todo!(),
         }
     }
@@ -126,19 +126,21 @@ fn main() {
         .unwrap()
         .read_to_end(&mut buf)
         .unwrap();
-    let elfinfo = ElfInfo::new(&buf);
 
     let (server, client) = create_inter_thread_channels();
+    let elfinfo = ElfInfo::new(&buf);
     thread::scope(|scope| {
-        scope.spawn(move || {
-            let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
-                &elfinfo,
-                leakage::HammingWeightLeakage::new(),
-                client,
-            )
-            .unwrap();
-            emu.start();
-        });
+        for _ in 0..args.threads {
+            scope.spawn(|| {
+                let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
+                    &elfinfo,
+                    leakage::HammingWeightLeakage::new(),
+                    client.clone(),
+                )
+                .unwrap();
+                emu.start();
+            });
+        }
 
         let _ = listen_forever(&args.socket, server);
     });

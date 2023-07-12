@@ -88,3 +88,4 @@ impl<'a> ElfInfo<'a> {
 }
 
 unsafe impl Send for ElfInfo<'_> {}
+unsafe impl Sync for ElfInfo<'_> {}

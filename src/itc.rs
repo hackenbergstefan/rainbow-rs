@@ -7,16 +7,14 @@
 use crossbeam_channel::{Receiver, Sender};
 
 /// Enum holding inter thread requests
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ITCRequest {
-    /// Request to receive the last captured trace.
-    GetTrace(usize),
     /// Data to be passed to "victim".
     VictimData(Vec<u8>),
 }
 
 /// Enum holding inter thread responses
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ITCResponse {
     /// Answer to `GetTrace`.
     Trace(Vec<f32>),
@@ -42,8 +40,8 @@ pub fn create_inter_thread_channels() -> (
     BiChannel<ITCRequest, ITCResponse>,
     BiChannel<ITCResponse, ITCRequest>,
 ) {
-    let (s1, r1) = crossbeam_channel::bounded(1);
-    let (s2, r2) = crossbeam_channel::bounded(1);
+    let (s1, r1) = crossbeam_channel::unbounded();
+    let (s2, r2) = crossbeam_channel::unbounded();
 
     (
         BiChannel {

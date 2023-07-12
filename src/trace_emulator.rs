@@ -246,11 +246,6 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulator<'a, L, C> {
     /// Shall be called in an idle-loop of victim execution. E.g. `SimpleSerial::getch`.
     pub fn process_inter_thread_communication(&mut self) -> bool {
         match self.itc.recv() {
-            Ok(ITCRequest::GetTrace(_)) => {
-                self.itc
-                    .send(ITCResponse::Trace(self.tracing.trace.clone()));
-                true
-            }
             Ok(ITCRequest::VictimData(data)) => {
                 self.victim_com.write(data);
                 true
@@ -341,7 +336,11 @@ pub fn hook_trigger_low<L: LeakageModel, C: Communication>(
     emu: &mut Unicorn<ThumbTraceEmulator<L, C>>,
 ) -> bool {
     hook_force_return(emu);
-    emu.get_data_mut().tracing.stop_capturing();
+    let inner = emu.get_data_mut();
+    inner.tracing.stop_capturing();
+    inner
+        .itc
+        .send(ITCResponse::Trace(inner.tracing.trace.clone()));
 
     true
 }
