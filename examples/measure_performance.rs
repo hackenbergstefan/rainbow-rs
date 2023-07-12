@@ -72,11 +72,12 @@ macro_rules! measure {
     ($prog:expr, $runs:expr, $threads:expr) => {
         let (time, total_samples) = measure($prog, $runs, $threads);
         println!(
-            "{:35} runs: {:>6} threads: {:2} => {:10} ms - {:>10} samples/s",
+            "{:35}: {:>6} loops using {:2} threads => {:10} ms - {:>20} samples, {:>10} samples/s",
             $prog,
             $runs.separate_with_commas(),
             $threads,
             time,
+            total_samples.separate_with_commas(),
             (total_samples as f32 / (time as f32) * 1000.0)
                 .round()
                 .separate_with_commas()
