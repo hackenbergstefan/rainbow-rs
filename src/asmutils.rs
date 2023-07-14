@@ -4,33 +4,25 @@
 
 use std::collections::BTreeMap;
 
-use capstone::prelude::BuildsCapstone;
-use capstone::Capstone;
-use capstone::OwnedInsn;
+use anyhow::{Context, Result};
+use capstone::{prelude::BuildsCapstone, Capstone, OwnedInsn};
+use elf::{endian::AnyEndian, ElfBytes, ParseError};
 
-use elf::{endian::AnyEndian, ElfBytes};
-use unicorn_engine::Unicorn;
+use crate::error::CapstoneError;
 
-pub fn disassemble<'a, D>(
-    emu: &Unicorn<D>,
-    capstone: &Capstone,
-    address: u64,
-    size: usize,
-) -> OwnedInsn<'a> {
-    let mut mem = [0u8; 8];
-    emu.mem_read(address, &mut mem[..size]).unwrap();
-    (&capstone.disasm_count(&mem[..size], address, 1).unwrap()[0]).into()
+fn iter_segments<'a>(
+    elfbytes: &'a ElfBytes<AnyEndian>,
+) -> impl Iterator<Item = Result<(u64, &'a [u8]), ParseError>> {
+    elfbytes.segments().unwrap().into_iter().map(|header| {
+        elfbytes
+            .segment_data(&header)
+            .map(|prog| (header.p_paddr, prog))
+    })
 }
 
-fn iter_segments<'a>(elfbytes: &'a ElfBytes<AnyEndian>) -> impl Iterator<Item = (u64, &'a [u8])> {
-    elfbytes
-        .segments()
-        .unwrap()
-        .into_iter()
-        .map(|header| (header.p_paddr, elfbytes.segment_data(&header).unwrap()))
-}
-
-fn create_instruction_map<'a>(elfbytes: &ElfBytes<AnyEndian>) -> BTreeMap<u64, OwnedInsn<'a>> {
+fn create_instruction_map<'a>(
+    elfbytes: &ElfBytes<AnyEndian>,
+) -> Result<BTreeMap<u64, OwnedInsn<'a>>> {
     let mut map = BTreeMap::new();
 
     let capstone = Capstone::new()
@@ -40,27 +32,29 @@ fn create_instruction_map<'a>(elfbytes: &ElfBytes<AnyEndian>) -> BTreeMap<u64, O
         .build()
         .unwrap();
 
-    for (addr, program) in iter_segments(elfbytes) {
-        let instructions = capstone.disasm_all(program, addr).unwrap();
+    for result in iter_segments(elfbytes) {
+        let (addr, program) = result?;
+        let instructions = capstone
+            .disasm_all(program, addr)
+            .map_err(CapstoneError::new)?;
         for insn in instructions.iter() {
             let addr = insn.address();
-            // let detail = capstone.insn_detail(insn).unwrap();
             map.insert(addr, OwnedInsn::from(insn));
         }
     }
-    map
+    Ok(map)
 }
 
-fn create_symbolmap(elfbytes: &ElfBytes<AnyEndian>) -> BTreeMap<String, u64> {
+fn create_symbolmap(elfbytes: &ElfBytes<AnyEndian>) -> Result<BTreeMap<String, u64>> {
     let mut map = BTreeMap::new();
-    let (symtable, strtable) = elfbytes.symbol_table().unwrap().unwrap();
+    let (symtable, strtable) = elfbytes.symbol_table()?.context("Not found")?;
     for symbol in symtable {
         map.insert(
-            strtable.get(symbol.st_name as usize).unwrap().to_owned(),
+            strtable.get(symbol.st_name as usize)?.to_owned(),
             symbol.st_value,
         );
     }
-    map
+    Ok(map)
 }
 
 pub struct ElfInfo<'a> {
@@ -70,19 +64,19 @@ pub struct ElfInfo<'a> {
 }
 
 impl<'a> ElfInfo<'a> {
-    pub fn new(elffile: &'a [u8]) -> ElfInfo {
-        let elfbytes = ElfBytes::<AnyEndian>::minimal_parse(elffile).unwrap();
-        let symbol_map = create_symbolmap(&elfbytes);
-        let instruction_map = create_instruction_map(&elfbytes);
+    pub fn new(elffile: &'a [u8]) -> Result<ElfInfo> {
+        let elfbytes = ElfBytes::<AnyEndian>::minimal_parse(elffile)?;
+        let symbol_map = create_symbolmap(&elfbytes)?;
+        let instruction_map = create_instruction_map(&elfbytes)?;
 
-        ElfInfo {
+        Ok(ElfInfo {
             elfbytes,
             symbol_map,
             instruction_map,
-        }
+        })
     }
 
-    pub fn segments(&self) -> impl Iterator<Item = (u64, &[u8])> {
+    pub fn segments(&self) -> impl Iterator<Item = Result<(u64, &[u8]), ParseError>> {
         iter_segments(&self.elfbytes)
     }
 }

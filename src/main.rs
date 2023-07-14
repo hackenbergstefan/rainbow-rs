@@ -7,14 +7,16 @@ use std::{
     net::TcpListener,
     path::Path,
     thread,
+    time::Duration,
 };
 
-use crate::trace_emulator::ThumbTraceEmulatorTrait;
+use anyhow::Result;
 use asmutils::ElfInfo;
 use clap::Parser;
 use itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
+use trace_emulator::ThumbTraceEmulatorTrait;
 
 mod asmutils;
 mod communication;
@@ -69,13 +71,10 @@ pub enum Command {
 /// Establish communication with rainbow-rs.
 /// Communication is entirely json based over one socket with the host
 /// sending requests and rainbow-rs answering.
-fn listen_forever(
-    socket_address: &str,
-    itc: BiChannel<ITCRequest, ITCResponse>,
-) -> Result<(), std::io::Error> {
+fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>) -> Result<()> {
     let listener = TcpListener::bind(socket_address)?;
     let (stream, _) = listener.accept()?;
-    stream.set_nodelay(true).unwrap();
+    stream.set_nodelay(true)?;
     let stream_reader = BufReader::new(&stream);
     let mut stream_writer = BufWriter::new(&stream);
 
@@ -83,9 +82,9 @@ fn listen_forever(
         let command: Command = serde_json::from_str(&line?)?;
         match command {
             Command::VictimData(data) => {
-                itc.send(ITCRequest::VictimData(data));
+                itc.send(ITCRequest::VictimData(data))?;
             }
-            Command::GetTrace(samples) => match itc.recv().unwrap() {
+            Command::GetTrace(samples) => match itc.recv()? {
                 ITCResponse::Trace(mut trace) => {
                     while samples > 0 && trace.len() > samples {
                         trace.pop();
@@ -94,11 +93,8 @@ fn listen_forever(
                         trace.push(0.0);
                     }
 
-                    stream_writer.write_all(
-                        serde_json::to_string(&Command::Trace(trace))
-                            .unwrap()
-                            .as_bytes(),
-                    )?;
+                    stream_writer
+                        .write_all(serde_json::to_string(&Command::Trace(trace))?.as_bytes())?;
                     stream_writer.write_all(b"\n")?;
                     stream_writer.flush()?;
                 }
@@ -109,7 +105,7 @@ fn listen_forever(
     Ok(())
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = CmdlineArgs::parse();
     simple_logger::SimpleLogger::new()
         .with_level(match args.verbose {
@@ -118,32 +114,38 @@ fn main() {
             3 => LevelFilter::Trace,
             _ => LevelFilter::Warn,
         })
-        .init()
-        .unwrap();
+        .init()?;
 
     let mut buf = Vec::new();
-    std::fs::File::open(&args.elffile)
-        .unwrap()
-        .read_to_end(&mut buf)
-        .unwrap();
+    std::fs::File::open(&args.elffile)?.read_to_end(&mut buf)?;
 
     let (server, client) = create_inter_thread_channels();
-    let elfinfo = ElfInfo::new(&buf);
-    thread::scope(|scope| {
-        for _ in 0..args.threads {
-            scope.spawn(|| {
+    let elfinfo = ElfInfo::new(&buf)?;
+    thread::scope(|scope| -> Result<()> {
+        let threads = Vec::from_iter((0..args.threads).map(|_| {
+            let s = scope.spawn(|| -> Result<()> {
                 let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
                     &elfinfo,
                     leakage::HammingWeightLeakage::new(),
                     client.clone(),
-                )
-                .unwrap();
-                emu.start();
+                )?;
+                emu.start()?;
+                Ok(())
             });
+            s
+        }));
+        thread::sleep(Duration::from_millis(100));
+
+        for t in threads {
+            if t.is_finished() {
+                return t.join().unwrap();
+            }
         }
 
-        let _ = listen_forever(&args.socket, server);
-    });
+        listen_forever(&args.socket, server)?;
+        Ok(())
+    })?;
+    Ok(())
 }
 
 #[cfg(test)]

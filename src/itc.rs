@@ -27,8 +27,8 @@ pub struct BiChannel<Req, Resp> {
 }
 
 impl<Req, Resp> BiChannel<Req, Resp> {
-    pub fn send(&self, data: Req) {
-        self.sender.send(data).unwrap();
+    pub fn send(&self, data: Req) -> Result<(), crossbeam_channel::SendError<Req>> {
+        self.sender.send(data)
     }
 
     pub fn recv(&self) -> Result<Resp, crossbeam_channel::RecvError> {

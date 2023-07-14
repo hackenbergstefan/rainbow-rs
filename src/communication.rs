@@ -6,9 +6,9 @@
 
 use std::collections::VecDeque;
 
+use anyhow::Result;
 use unicorn_engine::{RegisterARM, Unicorn};
 
-use crate::error::TraceEmulatorError;
 use crate::leakage::LeakageModel;
 use crate::trace_emulator::{hook_force_return, ThumbTraceEmulator, ThumbTraceEmulatorTrait};
 
@@ -37,7 +37,7 @@ impl SimpleSerial {
 
     pub fn install_hooks<'a: 'b, 'b, L: LeakageModel>(
         emu: &mut Unicorn<'a, ThumbTraceEmulator<'b, L, SimpleSerial>>,
-    ) -> Result<(), TraceEmulatorError> {
+    ) -> Result<()> {
         emu.register_hook("init_uart", Self::hook_init_uart)?;
         emu.register_hook("getch", Self::hook_getch)?;
         Ok(())
