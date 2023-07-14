@@ -5,8 +5,8 @@
 use capstone::{arch::arm::ArmOperandType, prelude::DetailsArchInsn, Insn, InsnDetail};
 use log::debug;
 
-use crate::trace_emulator::regid2regindex;
-use crate::trace_emulator::THUMB_TRACE_REGISTERS;
+use crate::regid2regindex;
+use crate::THUMB_TRACE_REGISTERS;
 
 /// Calculation of hamming weight (i.e. number of 1-bits in value)
 pub fn hamming_weight(value: u32) -> u32 {
@@ -32,6 +32,12 @@ pub struct HammingWeightLeakage {}
 impl HammingWeightLeakage {
     pub fn new() -> Self {
         Self {}
+    }
+}
+
+impl Default for HammingWeightLeakage {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

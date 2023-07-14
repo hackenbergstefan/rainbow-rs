@@ -3,6 +3,12 @@
 // SPDX-License-Identifier: MIT
 
 //! Implementation of an Emulator generating (side-channel) traces for Thumb based binary code.
+//!
+pub mod asmutils;
+pub mod communication;
+pub mod error;
+pub mod itc;
+pub mod leakage;
 
 use anyhow::{Context, Result};
 use capstone::{
@@ -16,15 +22,15 @@ use unicorn_engine::{
     RegisterARM, Unicorn,
 };
 
-use crate::asmutils::ElfInfo;
-use crate::communication::Communication;
-use crate::communication::SimpleSerial;
-use crate::error::CapstoneError;
-use crate::error::UcError;
-use crate::itc::BiChannel;
-use crate::itc::ITCRequest;
-use crate::itc::ITCResponse;
-use crate::leakage::LeakageModel;
+use asmutils::ElfInfo;
+use communication::Communication;
+use communication::SimpleSerial;
+use error::CapstoneError;
+use error::UcError;
+use itc::BiChannel;
+use itc::ITCRequest;
+use itc::ITCResponse;
+use leakage::LeakageModel;
 
 pub const THUMB_TRACE_REGISTERS: [RegisterARM; 16] = [
     RegisterARM::R0,

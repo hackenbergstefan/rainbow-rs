@@ -10,7 +10,7 @@ use anyhow::Result;
 use unicorn_engine::{RegisterARM, Unicorn};
 
 use crate::leakage::LeakageModel;
-use crate::trace_emulator::{hook_force_return, ThumbTraceEmulator, ThumbTraceEmulatorTrait};
+use crate::{hook_force_return, ThumbTraceEmulator, ThumbTraceEmulatorTrait};
 
 pub trait Communication {
     fn write(&mut self, data: Vec<u8>);
@@ -70,5 +70,11 @@ impl SimpleSerial {
 impl Communication for SimpleSerial {
     fn write(&mut self, data: Vec<u8>) {
         self.data = VecDeque::from(data);
+    }
+}
+
+impl Default for SimpleSerial {
+    fn default() -> Self {
+        Self::new()
     }
 }

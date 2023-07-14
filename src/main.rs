@@ -11,22 +11,16 @@ use std::{
 };
 
 use anyhow::Result;
-use asmutils::ElfInfo;
 use clap::Parser;
-use itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
-use trace_emulator::ThumbTraceEmulatorTrait;
 
-mod asmutils;
-mod communication;
-mod error;
-mod itc;
-mod leakage;
-mod trace_emulator;
-
-#[cfg(test)]
-mod tests;
+use rainbow_rs::{
+    asmutils::ElfInfo,
+    itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
+    leakage::HammingWeightLeakage,
+    new_simpleserialsocket_stm32f4, ThumbTraceEmulatorTrait,
+};
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -124,9 +118,9 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let threads = Vec::from_iter((0..args.threads).map(|_| {
             let s = scope.spawn(|| -> Result<()> {
-                let mut emu = trace_emulator::new_simpleserialsocket_stm32f4(
+                let mut emu = new_simpleserialsocket_stm32f4(
                     &elfinfo,
-                    leakage::HammingWeightLeakage::new(),
+                    HammingWeightLeakage::new(),
                     client.clone(),
                 )?;
                 emu.start()?;
