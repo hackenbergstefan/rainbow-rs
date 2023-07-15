@@ -114,7 +114,7 @@ fn main() -> Result<()> {
     std::fs::File::open(&args.elffile)?.read_to_end(&mut buf)?;
 
     let (server, client) = create_inter_thread_channels();
-    let elfinfo = ElfInfo::new(&buf)?;
+    let elfinfo = ElfInfo::new_from_elffile(&buf)?;
     thread::scope(|scope| -> Result<()> {
         let threads = Vec::from_iter((0..args.threads).map(|_| {
             let s = scope.spawn(|| -> Result<()> {
