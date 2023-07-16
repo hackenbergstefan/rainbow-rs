@@ -10,7 +10,7 @@ use rainbow_rs::{
     leakage::{HammingWeightLeakage, LeakageModel},
     ThumbTraceEmulator, ThumbTraceEmulatorTrait, THUMB_TRACE_REGISTERS,
 };
-use unicorn_engine::{unicorn_const::Permission, Unicorn};
+use unicorn_engine::unicorn_const::Permission;
 
 #[ctor::ctor]
 fn init() {
@@ -86,11 +86,11 @@ fn test_hamming_weight_leakage() {
     emu.load().unwrap();
 
     emu.register_hook_addr(0x1000_0000, |emu| {
-        <Unicorn<_>>::start_capturing(emu);
+        emu.start_capturing();
         true
     });
     emu.register_hook_addr(0x1000_000c, |emu| {
-        <Unicorn<_>>::stop_capturing(emu);
+        emu.stop_capturing();
         false
     });
 
@@ -125,7 +125,7 @@ fn test_victim_communication() {
     emu.load().unwrap();
 
     emu.register_hook_addr(0x1000_0000, |emu| {
-        emu.get_data_mut().process_inter_thread_communication();
+        emu.process_inter_thread_communication();
         false
     });
 

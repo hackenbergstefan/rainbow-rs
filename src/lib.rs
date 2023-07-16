@@ -94,8 +94,6 @@ impl Tracing {
 }
 
 pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication>: Sized {
-    type D;
-
     fn new(
         elfinfo: &'a ElfInfo,
         leakage: L,
@@ -111,20 +109,20 @@ pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication>: Sized 
 
     fn register_hook_addr(&mut self, address: u64, hook: Hook<L, C>);
 
-    fn hook_code(emu: &mut Unicorn<Self::D>, address: u64, size: u32);
+    fn hook_code(&mut self, address: u64, size: u32);
 
-    fn start_capturing(emu: &mut Unicorn<Self::D>);
+    fn start_capturing(&mut self);
 
-    fn stop_capturing(emu: &mut Unicorn<Self::D>);
+    fn stop_capturing(&mut self);
 
     fn get_trace(&self) -> &Vec<f32>;
+
+    fn process_inter_thread_communication(&mut self) -> bool;
 }
 
 impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
-    for Unicorn<'a, ThumbTraceEmulator<'a, L, C>>
+    for Unicorn<'_, ThumbTraceEmulator<'a, L, C>>
 {
-    type D = ThumbTraceEmulator<'a, L, C>;
-
     fn new(
         elfinfo: &'a ElfInfo,
         leakage: L,
@@ -175,8 +173,10 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 self.reg_write(RegisterARM::SP, initial_sp)
                     .map_err(UcError::new)?;
                 info!("Initial registers: PC: {start_addr:08x} SP: {initial_sp:08x}");
-                self.add_code_hook(addr, addr + program.len() as u64, Self::hook_code)
-                    .map_err(UcError::new)?;
+                self.add_code_hook(addr, addr + program.len() as u64, |emu, address, size| {
+                    emu.hook_code(address, size);
+                })
+                .map_err(UcError::new)?;
             }
         }
 
@@ -207,15 +207,15 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
     }
 
     /// Generic hook that is executed for _every_ instruction
-    fn hook_code(emu: &mut Unicorn<ThumbTraceEmulator<L, C>>, address: u64, _size: u32) {
-        let inner = emu.get_data();
+    fn hook_code(&mut self, address: u64, _size: u32) {
+        let inner = self.get_data();
 
         // Execute hook if present
         for (hook_addr, hook_func) in &inner.hooks {
             if address == hook_addr & !1 {
                 info!("Execute hook at {:08x}", address);
-                if !hook_func(emu) {
-                    emu.emu_stop().unwrap();
+                if !hook_func(self) {
+                    self.emu_stop().unwrap();
                 }
                 return;
             }
@@ -243,9 +243,9 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
 
         // Add tracepoint if capturing
         if inner.tracing.capturing {
-            let regs_after = THUMB_TRACE_REGISTERS.map(|r| emu.reg_read(r).unwrap() as u32);
+            let regs_after = THUMB_TRACE_REGISTERS.map(|r| self.reg_read(r).unwrap() as u32);
             if let Some(regs_before) = inner.tracing.register_values {
-                let inner_mut = emu.get_data_mut();
+                let inner_mut = self.get_data_mut();
                 let address = regs_before[regs_before.len() - 1];
                 let instruction = inner_mut
                     .elfinfo
@@ -260,36 +260,37 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 ));
                 inner_mut.tracing.instruction_trace.push(address);
             }
-            emu.get_data_mut().tracing.register_values = Some(regs_after);
+            self.get_data_mut().tracing.register_values = Some(regs_after);
         }
     }
 
-    fn start_capturing(emu: &mut Unicorn<Self::D>) {
-        emu.get_data_mut().tracing.start_capturing();
+    fn start_capturing(&mut self) {
+        self.get_data_mut().tracing.start_capturing();
     }
 
-    fn stop_capturing(emu: &mut Unicorn<Self::D>) {
-        emu.get_data_mut().tracing.stop_capturing();
+    fn stop_capturing(&mut self) {
+        self.get_data_mut().tracing.stop_capturing();
     }
 
     fn get_trace(&self) -> &Vec<f32> {
         &self.get_data().tracing.trace
     }
-}
 
-impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulator<'a, L, C> {
     /// Blocking function to process requests from main thread.
     /// Shall be called in an idle-loop of victim execution. E.g. `SimpleSerial::getch`.
-    pub fn process_inter_thread_communication(&mut self) -> bool {
-        match self.itc.recv() {
+    fn process_inter_thread_communication(&mut self) -> bool {
+        let inner = self.get_data_mut();
+        match inner.itc.recv() {
             Ok(ITCRequest::VictimData(data)) => {
-                self.victim_com.write(data);
+                inner.victim_com.write(data);
                 true
             }
             Err(_) => false,
         }
     }
+}
 
+impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulator<'a, L, C> {
     pub fn new(
         elfinfo: &'a ElfInfo,
         leakage: L,

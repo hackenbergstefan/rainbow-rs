@@ -53,14 +53,13 @@ impl SimpleSerial {
     pub fn hook_getch<L: LeakageModel>(
         emu: &mut Unicorn<ThumbTraceEmulator<L, SimpleSerial>>,
     ) -> bool {
-        let inner = emu.get_data_mut();
-        while inner.victim_com.data.is_empty() {
-            if !inner.process_inter_thread_communication() {
+        while emu.get_data().victim_com.data.is_empty() {
+            if !emu.process_inter_thread_communication() {
                 return false;
             }
         }
 
-        let char = inner.victim_com.data.pop_front().unwrap();
+        let char = emu.get_data_mut().victim_com.data.pop_front().unwrap();
         emu.reg_write(RegisterARM::R0, char as u64).unwrap();
         hook_force_return(emu);
         true
