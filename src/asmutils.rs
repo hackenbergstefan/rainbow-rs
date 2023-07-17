@@ -5,8 +5,13 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
-use capstone::{prelude::BuildsCapstone, Capstone, OwnedInsn};
+use capstone::{
+    arch::arm::ArmInsnDetail,
+    prelude::{BuildsCapstone, DetailsArchInsn},
+    Capstone, OwnedInsn, RegId,
+};
 use elf::{endian::AnyEndian, ElfBytes};
+use unicorn_engine::Unicorn;
 
 use crate::error::CapstoneError;
 
@@ -25,7 +30,7 @@ fn segments(elfbytes: &ElfBytes<AnyEndian>) -> Result<Vec<Segment>> {
 
 fn create_instruction_map<'a>(
     segments: impl Iterator<Item = &'a Segment>,
-) -> Result<BTreeMap<u64, OwnedInsn<'static>>> {
+) -> Result<BTreeMap<u64, (OwnedInsn<'static>, Vec<RegId>)>> {
     let mut map = BTreeMap::new();
 
     let capstone = Capstone::new()
@@ -40,8 +45,11 @@ fn create_instruction_map<'a>(
             .disasm_all(data, *addr)
             .map_err(CapstoneError::new)?;
         for insn in instructions.iter() {
+            let insn_detail = capstone.insn_detail(insn).unwrap();
+            let insn_detail = insn_detail.arch_detail();
+            let insn_detail = insn_detail.arm().unwrap();
             let addr = insn.address();
-            map.insert(addr, OwnedInsn::from(insn));
+            map.insert(addr, (OwnedInsn::from(insn), insn_detail.get_regs()));
         }
     }
     Ok(map)
@@ -62,7 +70,7 @@ fn create_symbolmap(elfbytes: &ElfBytes<AnyEndian>) -> Result<BTreeMap<String, u
 pub struct ElfInfo {
     data: Vec<Segment>,
     symbol_map: Option<BTreeMap<String, u64>>,
-    instruction_map: BTreeMap<u64, OwnedInsn<'static>>,
+    instruction_map: BTreeMap<u64, (OwnedInsn<'static>, Vec<RegId>)>,
 }
 
 impl ElfInfo {
@@ -101,8 +109,9 @@ impl ElfInfo {
         }
     }
 
-    pub fn get_instruction(&self, address: &u64) -> Option<&OwnedInsn> {
+    pub fn get_instruction(&self, address: &u64) -> Option<&(OwnedInsn<'static>, Vec<RegId>)> {
         self.instruction_map.get(address)
+        // .and_then(|(ins, regs)| Some((OwnedInsn::from(ins.deref()), regs)))
     }
 }
 
@@ -111,3 +120,34 @@ unsafe impl Sync for ElfInfo {}
 
 #[derive(Clone)]
 pub struct Segment(pub u64, pub Vec<u8>);
+
+pub trait ModifiedRegs {
+    fn get_regs(&self) -> Vec<RegId>;
+    fn get_regs_values<D>(&self, emu: &Unicorn<D>) -> Vec<(RegId, u64)>;
+}
+
+impl ModifiedRegs for ArmInsnDetail<'_> {
+    fn get_regs(&self) -> Vec<RegId> {
+        let mut result = Vec::with_capacity(4);
+        for operand in self.operands() {
+            match operand.op_type {
+                capstone::arch::arm::ArmOperandType::Reg(regid) => {
+                    result.push(regid);
+                }
+                capstone::arch::arm::ArmOperandType::Mem(_mem) => {
+                    // result.push((regid, emu.reg_read(regid.0)));
+                    // TODO
+                }
+                _ => {}
+            }
+        }
+        result
+    }
+
+    fn get_regs_values<D>(&self, emu: &Unicorn<D>) -> Vec<(RegId, u64)> {
+        self.get_regs()
+            .into_iter()
+            .map(|regid| (regid, emu.reg_read(regid.0).unwrap()))
+            .collect()
+    }
+}

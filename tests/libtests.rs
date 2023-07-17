@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-use capstone::{Insn, InsnDetail};
+use capstone::{arch::arm::ArmInsnDetail, Insn, RegId};
 use rainbow_rs::{
     asmutils::{ElfInfo, Segment},
     communication::Communication,
     itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
     leakage::{HammingWeightLeakage, LeakageModel},
-    ThumbTraceEmulator, ThumbTraceEmulatorTrait, THUMB_TRACE_REGISTERS,
+    ThumbTraceEmulator, ThumbTraceEmulatorTrait,
 };
 use unicorn_engine::unicorn_const::Permission;
 
@@ -51,9 +51,9 @@ impl LeakageModel for NullLeakage {
     fn calculate(
         &self,
         _instruction: &Insn,
-        _instruction_detail: &InsnDetail,
-        _last_values: &[u32; THUMB_TRACE_REGISTERS.len()],
-        _values: &[u32; THUMB_TRACE_REGISTERS.len()],
+        _instruction_detail: &ArmInsnDetail,
+        _regs_before: &[u64],
+        _regs_after: &[u64],
     ) -> f32 {
         0.0
     }
@@ -70,6 +70,7 @@ fn test_hamming_weight_leakage() {
             0x03, 0x20, // movs r0, #0x03
             0x07, 0x20, // movs r0, #0x07
             0x0F, 0x20, // movs r0, #0x0F
+            0x00, 0xBF, // nop
             0x00, 0xBF, // nop for hook
         ],
     )])

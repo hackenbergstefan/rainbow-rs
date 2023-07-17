@@ -24,3 +24,6 @@ ctor = "0.2.2"
 env_logger = "0.10.0"
 num_cpus = "1.16.0"
 thousands = "0.2.0"
+
+[profile.release]
+debug = true

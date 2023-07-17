@@ -14,7 +14,7 @@ use anyhow::{Context, Result};
 use capstone::{
     arch::arm::ArmOperand,
     prelude::{BuildsCapstone, DetailsArchInsn},
-    Capstone, RegId,
+    Capstone, OwnedInsn, RegId,
 };
 use log::{info, trace};
 use unicorn_engine::{
@@ -32,35 +32,6 @@ use itc::ITCRequest;
 use itc::ITCResponse;
 use leakage::LeakageModel;
 
-pub const THUMB_TRACE_REGISTERS: [RegisterARM; 16] = [
-    RegisterARM::R0,
-    RegisterARM::R1,
-    RegisterARM::R2,
-    RegisterARM::R3,
-    RegisterARM::R4,
-    RegisterARM::R5,
-    RegisterARM::R6,
-    RegisterARM::R7,
-    RegisterARM::R8,
-    RegisterARM::R9,
-    RegisterARM::R10,
-    RegisterARM::R11,
-    RegisterARM::R12,
-    RegisterARM::LR,
-    RegisterARM::XPSR,
-    RegisterARM::PC,
-    // RegisterARM::SP,
-];
-
-pub fn regid2regindex(regid: RegId) -> Option<(usize, RegisterARM)> {
-    for (i, reg) in THUMB_TRACE_REGISTERS.iter().enumerate() {
-        if regid.0 == *reg as u16 {
-            return Some((i, *reg));
-        }
-    }
-    None
-}
-
 type Hook<L, C> = fn(&mut Unicorn<ThumbTraceEmulator<L, C>>) -> bool;
 
 pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
@@ -75,7 +46,7 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
 
 pub struct Tracing {
     capturing: bool,
-    register_values: Option<[u32; THUMB_TRACE_REGISTERS.len()]>,
+    register_values: Option<(*const OwnedInsn<'static>, Vec<RegId>, Vec<u64>)>,
     trace: Vec<f32>,
     instruction_trace: Vec<u32>,
 }
@@ -223,7 +194,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
 
         // Log current instruction
         if log::log_enabled!(log::Level::Info) {
-            let instruction = inner.elfinfo.get_instruction(&address).unwrap();
+            let (instruction, _) = inner.elfinfo.get_instruction(&address).unwrap();
             info!(
                 "Executing {:08x}: {:} {:} operands: {:?}",
                 instruction.address(),
@@ -243,24 +214,42 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
 
         // Add tracepoint if capturing
         if inner.tracing.capturing {
-            let regs_after = THUMB_TRACE_REGISTERS.map(|r| self.reg_read(r).unwrap() as u32);
-            if let Some(regs_before) = inner.tracing.register_values {
-                let inner_mut = self.get_data_mut();
-                let address = regs_before[regs_before.len() - 1];
-                let instruction = inner_mut
-                    .elfinfo
-                    .get_instruction(&(address as u64))
-                    .unwrap();
+            let (instruction, next_instruction_registers) =
+                inner.elfinfo.get_instruction(&address).unwrap();
+            let reg_values_before_next_instruction: Vec<_> = next_instruction_registers
+                .iter()
+                .map(|regid| self.reg_read(regid.0).unwrap())
+                .collect();
 
-                inner_mut.tracing.trace.push(inner_mut.leakage.calculate(
+            if let Some((instruction, instruction_registers, register_values_before)) =
+                inner.tracing.register_values.as_ref()
+            {
+                let instruction = { unsafe { instruction.as_ref().unwrap() } };
+                let register_values: Vec<_> = instruction_registers
+                    .iter()
+                    .map(|regid| self.reg_read(regid.0).unwrap())
+                    .collect();
+                let instruction_detail = inner.capstone.insn_detail(instruction).unwrap();
+                let instruction_detail = instruction_detail.arch_detail();
+                let instruction_detail = instruction_detail.arm().unwrap();
+                let leakage = self.get_data().leakage.calculate(
                     instruction,
-                    &inner_mut.capstone.insn_detail(instruction).unwrap(),
-                    &regs_before,
-                    &regs_after,
-                ));
-                inner_mut.tracing.instruction_trace.push(address);
+                    instruction_detail,
+                    register_values_before,
+                    &register_values,
+                );
+                self.get_data_mut().tracing.trace.push(leakage);
+                self.get_data_mut()
+                    .tracing
+                    .instruction_trace
+                    .push(instruction.address() as u32);
             }
-            self.get_data_mut().tracing.register_values = Some(regs_after);
+
+            self.get_data_mut().tracing.register_values = Some((
+                instruction,
+                next_instruction_registers.clone(),
+                reg_values_before_next_instruction,
+            ));
         }
     }
 

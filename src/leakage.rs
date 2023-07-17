@@ -2,13 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
-use capstone::{arch::arm::ArmOperandType, prelude::DetailsArchInsn, Insn, InsnDetail};
+use capstone::{arch::arm::ArmInsnDetail, Insn};
 use log::debug;
 
-use crate::regid2regindex;
-use crate::THUMB_TRACE_REGISTERS;
+use crate::asmutils::ModifiedRegs;
 
 /// Calculation of hamming weight (i.e. number of 1-bits in value)
+#[inline]
 pub fn hamming_weight(value: u32) -> u32 {
     value.count_ones()
 }
@@ -19,9 +19,9 @@ pub trait LeakageModel {
     fn calculate(
         &self,
         instruction: &Insn,
-        instruction_detail: &InsnDetail,
-        last_values: &[u32; THUMB_TRACE_REGISTERS.len()],
-        values: &[u32; THUMB_TRACE_REGISTERS.len()],
+        instruction_detail: &ArmInsnDetail,
+        regs_before: &[u64],
+        regs_after: &[u64],
     ) -> f32;
 }
 
@@ -45,30 +45,23 @@ impl LeakageModel for HammingWeightLeakage {
     fn calculate(
         &self,
         instruction: &Insn,
-        instruction_detail: &InsnDetail,
-        _last_values: &[u32; THUMB_TRACE_REGISTERS.len()],
-        values: &[u32; THUMB_TRACE_REGISTERS.len()],
+        instruction_detail: &ArmInsnDetail,
+        regs_before: &[u64],
+        regs_after: &[u64],
     ) -> f32 {
+        let val = regs_after
+            .iter()
+            .map(|val| hamming_weight(*val as u32) as f32)
+            .sum();
         debug!(
-            "Calculate for {:} {:}",
+            "Calculate for {:} {:} {:?}: {:?} -> {:?} => {:?}",
             instruction.mnemonic().unwrap(),
             instruction.op_str().unwrap(),
-            // instruction_detail
-            //     .arch_detail()
-            //     .arm()
-            //     .unwrap()
-            //     .operands()
-            //     .collect::<Vec<ArmOperand>>(),
+            instruction_detail.get_regs(),
+            regs_before,
+            regs_after,
+            val
         );
-        let mut val = 0.0;
-        for operand in instruction_detail.arch_detail().arm().unwrap().operands() {
-            if let ArmOperandType::Reg(r) = operand.op_type {
-                if let Some((i, reg)) = regid2regindex(r) {
-                    debug!("    {:?}: {:08x}", reg, values[i]);
-                    val += hamming_weight(values[i]) as f32;
-                }
-            }
-        }
         val
     }
 }
