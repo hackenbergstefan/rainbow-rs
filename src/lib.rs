@@ -11,6 +11,7 @@ pub mod itc;
 pub mod leakage;
 
 use anyhow::{Context, Result};
+use arrayvec::ArrayVec;
 use capstone::{
     arch::arm::ArmOperand,
     prelude::{BuildsCapstone, DetailsArchInsn},
@@ -39,19 +40,19 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
     capstone: Capstone,
     hooks: Vec<(u64, Hook<L, C>)>,
     leakage: L,
-    tracing: Tracing,
+    tracing: Tracing<'a>,
     victim_com: C,
     itc: BiChannel<ITCResponse, ITCRequest>,
 }
 
-pub struct Tracing {
+pub struct Tracing<'a> {
     capturing: bool,
-    register_values: Option<(*const OwnedInsn<'static>, Vec<RegId>, Vec<u64>)>,
+    register_values: Option<(&'a OwnedInsn<'static>, &'a Vec<RegId>, ArrayVec<u64, 20>)>,
     trace: Vec<f32>,
     instruction_trace: Vec<u32>,
 }
 
-impl Tracing {
+impl<'a> Tracing<'a> {
     fn start_capturing(&mut self) {
         self.capturing = true;
         self.register_values = None;
@@ -216,7 +217,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         if inner.tracing.capturing {
             let (instruction, next_instruction_registers) =
                 inner.elfinfo.get_instruction(&address).unwrap();
-            let reg_values_before_next_instruction: Vec<_> = next_instruction_registers
+            let reg_values_before_next_instruction: ArrayVec<_, 20> = next_instruction_registers
                 .iter()
                 .map(|regid| self.reg_read(regid.0).unwrap())
                 .collect();
@@ -224,8 +225,8 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
             if let Some((instruction, instruction_registers, register_values_before)) =
                 inner.tracing.register_values.as_ref()
             {
-                let instruction = { unsafe { instruction.as_ref().unwrap() } };
-                let register_values: Vec<_> = instruction_registers
+                let address = instruction.address();
+                let register_values: ArrayVec<_, 20> = instruction_registers
                     .iter()
                     .map(|regid| self.reg_read(regid.0).unwrap())
                     .collect();
@@ -242,12 +243,12 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 self.get_data_mut()
                     .tracing
                     .instruction_trace
-                    .push(instruction.address() as u32);
+                    .push(address as u32);
             }
 
             self.get_data_mut().tracing.register_values = Some((
                 instruction,
-                next_instruction_registers.clone(),
+                next_instruction_registers,
                 reg_values_before_next_instruction,
             ));
         }

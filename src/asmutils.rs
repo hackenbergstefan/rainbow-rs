@@ -109,7 +109,10 @@ impl ElfInfo {
         }
     }
 
-    pub fn get_instruction(&self, address: &u64) -> Option<&(OwnedInsn<'static>, Vec<RegId>)> {
+    pub fn get_instruction<'a>(
+        &'a self,
+        address: &u64,
+    ) -> Option<&'a (OwnedInsn<'static>, Vec<RegId>)> {
         self.instruction_map.get(address)
         // .and_then(|(ins, regs)| Some((OwnedInsn::from(ins.deref()), regs)))
     }

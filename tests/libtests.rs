@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use capstone::{arch::arm::ArmInsnDetail, Insn, RegId};
+use capstone::{arch::arm::ArmInsnDetail, Insn};
 use rainbow_rs::{
     asmutils::{ElfInfo, Segment},
     communication::Communication,
