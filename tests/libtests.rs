@@ -108,9 +108,9 @@ fn test_victim_communication() {
         0x1000_0000,
         vec![
             0x00, 0xBF, // nop for hook
-            0x00, 0xBF, // nop for hook
-            0x00, 0xBF, // nop for hook
-            0x00, 0xBF, // nop for hook
+            0x00, 0xBF, // nop
+            0x00, 0xBF, // nop
+            0x00, 0xBF, // nop
         ],
     )])
     .unwrap();
@@ -142,4 +142,36 @@ fn test_victim_communication() {
         ITCResponse::Trace(v)
         if v == vec![1.0, 2.0, 3.0, 4.0]
     ))
+}
+
+#[test]
+fn test_terminate() {
+    let (channel_host, channel_emu) = create_inter_thread_channels();
+    let elfinfo = ElfInfo::new_from_binary(vec![Segment(
+        0x1000_0000,
+        vec![
+            0x00, 0xBF, // nop for hook
+            0x00, 0xBF, // nop
+            0x00, 0xBF, // nop
+            0x00, 0xBF, // nop
+        ],
+    )])
+    .unwrap();
+    let mut emu = ThumbTraceEmulator::new(
+        &elfinfo,
+        HammingWeightLeakage::new(),
+        Reflector::new(channel_emu.clone()),
+        channel_emu,
+    )
+    .unwrap();
+
+    emu.mem_map(0x1000_0000, 1024, Permission::all()).unwrap();
+    emu.load().unwrap();
+
+    emu.register_hook_addr(0x1000_0000, |emu| emu.process_inter_thread_communication());
+
+    channel_host.send(ITCRequest::Terminate).unwrap();
+
+    emu.set_pc(0x1000_0001).unwrap();
+    emu.start().unwrap();
 }

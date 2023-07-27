@@ -275,6 +275,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 inner.victim_com.write(data);
                 true
             }
+            Ok(ITCRequest::Terminate) => false,
             Err(_) => false,
         }
     }
