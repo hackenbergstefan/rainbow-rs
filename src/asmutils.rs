@@ -5,10 +5,11 @@
 use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
+use arrayvec::ArrayVec;
 use capstone::{
-    arch::arm::ArmInsnDetail,
+    arch::arm::{ArmInsnDetail, ArmOperand, ArmOperandType},
     prelude::{BuildsCapstone, DetailsArchInsn},
-    Capstone, OwnedInsn, RegId,
+    Capstone, OwnedInsn,
 };
 use elf::{endian::AnyEndian, ElfBytes};
 use unicorn_engine::Unicorn;
@@ -30,7 +31,7 @@ fn segments(elfbytes: &ElfBytes<AnyEndian>) -> Result<Vec<Segment>> {
 
 fn create_instruction_map<'a>(
     segments: impl Iterator<Item = &'a Segment>,
-) -> Result<BTreeMap<u64, (OwnedInsn<'static>, Vec<RegId>)>> {
+) -> Result<BTreeMap<u64, (OwnedInsn<'static>, Vec<ArmOperand>)>> {
     let mut map = BTreeMap::new();
 
     let capstone = Capstone::new()
@@ -49,7 +50,7 @@ fn create_instruction_map<'a>(
             let insn_detail = insn_detail.arch_detail();
             let insn_detail = insn_detail.arm().unwrap();
             let addr = insn.address();
-            map.insert(addr, (OwnedInsn::from(insn), insn_detail.get_regs()));
+            map.insert(addr, (OwnedInsn::from(insn), insn_detail.sca_operands()));
         }
     }
     Ok(map)
@@ -70,7 +71,7 @@ fn create_symbolmap(elfbytes: &ElfBytes<AnyEndian>) -> Result<BTreeMap<String, u
 pub struct ElfInfo {
     data: Vec<Segment>,
     symbol_map: Option<BTreeMap<String, u64>>,
-    instruction_map: BTreeMap<u64, (OwnedInsn<'static>, Vec<RegId>)>,
+    instruction_map: BTreeMap<u64, (OwnedInsn<'static>, Vec<ArmOperand>)>,
 }
 
 impl ElfInfo {
@@ -112,7 +113,7 @@ impl ElfInfo {
     pub fn get_instruction<'a>(
         &'a self,
         address: &u64,
-    ) -> Option<&'a (OwnedInsn<'static>, Vec<RegId>)> {
+    ) -> Option<&'a (OwnedInsn<'static>, Vec<ArmOperand>)> {
         self.instruction_map.get(address)
         // .and_then(|(ins, regs)| Some((OwnedInsn::from(ins.deref()), regs)))
     }
@@ -124,33 +125,45 @@ unsafe impl Sync for ElfInfo {}
 #[derive(Clone)]
 pub struct Segment(pub u64, pub Vec<u8>);
 
-pub trait ModifiedRegs {
-    fn get_regs(&self) -> Vec<RegId>;
-    fn get_regs_values<D>(&self, emu: &Unicorn<D>) -> Vec<(RegId, u64)>;
+impl Segment {
+    /// Start address of segment
+    pub fn start(&self) -> u64 {
+        self.0
+    }
+
+    /// End address of segment, i.e. last address containing data
+    pub fn end(&self) -> u64 {
+        self.0 + self.1.len() as u64
+    }
 }
 
-impl ModifiedRegs for ArmInsnDetail<'_> {
-    fn get_regs(&self) -> Vec<RegId> {
-        let mut result = Vec::with_capacity(4);
-        for operand in self.operands() {
-            match operand.op_type {
-                capstone::arch::arm::ArmOperandType::Reg(regid) => {
-                    result.push(regid);
+pub trait SideChannelOperands {
+    fn sca_operands(&self) -> Vec<ArmOperand>;
+}
+
+impl SideChannelOperands for ArmInsnDetail<'_> {
+    fn sca_operands(&self) -> Vec<ArmOperand> {
+        self.operands()
+            .filter(|op| matches!(op.op_type, ArmOperandType::Reg(_)))
+            .collect()
+    }
+}
+
+pub trait SideChannelOperandsValues {
+    fn sca_operands_values<D>(&self, emu: &Unicorn<D>) -> ArrayVec<u64, 20>;
+}
+
+impl SideChannelOperandsValues for Vec<ArmOperand> {
+    fn sca_operands_values<D>(&self, emu: &Unicorn<D>) -> ArrayVec<u64, 20> {
+        let mut result = ArrayVec::new();
+        for op in self {
+            match op.op_type {
+                ArmOperandType::Reg(regid) => {
+                    result.push(emu.reg_read(regid.0).unwrap());
                 }
-                capstone::arch::arm::ArmOperandType::Mem(_mem) => {
-                    // result.push((regid, emu.reg_read(regid.0)));
-                    // TODO
-                }
-                _ => {}
+                _ => panic!(),
             }
         }
         result
-    }
-
-    fn get_regs_values<D>(&self, emu: &Unicorn<D>) -> Vec<(RegId, u64)> {
-        self.get_regs()
-            .into_iter()
-            .map(|regid| (regid, emu.reg_read(regid.0).unwrap()))
-            .collect()
     }
 }

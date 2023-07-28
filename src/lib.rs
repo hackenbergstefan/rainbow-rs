@@ -15,22 +15,18 @@ use arrayvec::ArrayVec;
 use capstone::{
     arch::arm::ArmOperand,
     prelude::{BuildsCapstone, DetailsArchInsn},
-    Capstone, OwnedInsn, RegId,
+    Capstone, OwnedInsn,
 };
 use log::{info, trace};
 use unicorn_engine::{
-    unicorn_const::{Arch, HookType, Mode, Permission},
+    unicorn_const::{Arch, HookType, MemType, Mode, Permission},
     RegisterARM, Unicorn,
 };
 
-use asmutils::{ElfInfo, Segment};
-use communication::Communication;
-use communication::SimpleSerial;
-use error::CapstoneError;
-use error::UcError;
-use itc::BiChannel;
-use itc::ITCRequest;
-use itc::ITCResponse;
+use asmutils::{ElfInfo, Segment, SideChannelOperandsValues};
+use communication::{Communication, SimpleSerial};
+use error::{CapstoneError, UcError};
+use itc::{BiChannel, ITCRequest, ITCResponse};
 use leakage::LeakageModel;
 
 type Hook<L, C> = fn(&mut Unicorn<ThumbTraceEmulator<L, C>>) -> bool;
@@ -47,9 +43,14 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
 
 pub struct Tracing<'a> {
     capturing: bool,
-    register_values: Option<(&'a OwnedInsn<'static>, &'a Vec<RegId>, ArrayVec<u64, 20>)>,
+    register_values: Option<(
+        &'a OwnedInsn<'static>,
+        &'a Vec<ArmOperand>,
+        ArrayVec<u64, 20>,
+    )>,
     trace: Vec<f32>,
     instruction_trace: Vec<u32>,
+    temporary_memory_leakage: ArrayVec<f32, 16>,
 }
 
 impl<'a> Tracing<'a> {
@@ -82,6 +83,8 @@ pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication>: Sized 
     fn register_hook_addr(&mut self, address: u64, hook: Hook<L, C>);
 
     fn hook_code(&mut self, address: u64, size: u32);
+
+    fn hook_memory(&mut self, _memtype: MemType, address: u64, size: usize, newvalue: i64) -> bool;
 
     fn start_capturing(&mut self);
 
@@ -119,6 +122,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     trace: Vec::new(),
                     instruction_trace: Vec::new(),
                     capturing: false,
+                    temporary_memory_leakage: ArrayVec::new(),
                 },
                 victim_com,
                 itc,
@@ -151,6 +155,15 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 .map_err(UcError::new)?;
             }
         }
+        self.add_mem_hook(
+            HookType::MEM_WRITE,
+            0,
+            0xFFFF_0000,
+            |emu, memtype, address, size, newvalue| -> bool {
+                emu.hook_memory(memtype, address, size, newvalue)
+            },
+        )
+        .unwrap();
 
         Ok(())
     }
@@ -217,19 +230,14 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         if inner.tracing.capturing {
             let (instruction, next_instruction_registers) =
                 inner.elfinfo.get_instruction(&address).unwrap();
-            let reg_values_before_next_instruction: ArrayVec<_, 20> = next_instruction_registers
-                .iter()
-                .map(|regid| self.reg_read(regid.0).unwrap())
-                .collect();
+            let reg_values_before_next_instruction =
+                next_instruction_registers.sca_operands_values(self);
 
             if let Some((instruction, instruction_registers, register_values_before)) =
                 inner.tracing.register_values.as_ref()
             {
                 let address = instruction.address();
-                let register_values: ArrayVec<_, 20> = instruction_registers
-                    .iter()
-                    .map(|regid| self.reg_read(regid.0).unwrap())
-                    .collect();
+                let register_values = instruction_registers.sca_operands_values(self);
                 let instruction_detail = inner.capstone.insn_detail(instruction).unwrap();
                 let instruction_detail = instruction_detail.arch_detail();
                 let instruction_detail = instruction_detail.arm().unwrap();
@@ -239,11 +247,16 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     register_values_before,
                     &register_values,
                 );
-                self.get_data_mut().tracing.trace.push(leakage);
-                self.get_data_mut()
-                    .tracing
-                    .instruction_trace
-                    .push(address as u32);
+                let inner_mut = self.get_data_mut();
+                inner_mut.tracing.trace.push(leakage);
+                inner_mut.tracing.instruction_trace.push(address as u32);
+
+                // Append cached memory leakages
+                for &mem_leakage in &inner_mut.tracing.temporary_memory_leakage {
+                    inner_mut.tracing.trace.push(mem_leakage);
+                    inner_mut.tracing.instruction_trace.push(address as u32);
+                }
+                inner_mut.tracing.temporary_memory_leakage.clear();
             }
 
             self.get_data_mut().tracing.register_values = Some((
@@ -252,6 +265,25 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 reg_values_before_next_instruction,
             ));
         }
+    }
+
+    fn hook_memory(&mut self, _memtype: MemType, address: u64, size: usize, newvalue: i64) -> bool {
+        if self.get_data().tracing.capturing {
+            let oldvalue = {
+                let mut oldvalue = [0; 8];
+                self.mem_read(address, &mut oldvalue[..size]).unwrap();
+                u64::from_le_bytes(oldvalue)
+            };
+            info!("hook_memory {address:08x} {size} {oldvalue:08x} -> {newvalue:08x}");
+
+            let inner_mut = self.get_data_mut();
+            inner_mut.tracing.temporary_memory_leakage.push(
+                inner_mut
+                    .leakage
+                    .calculate_memory(oldvalue, newvalue as u64),
+            );
+        }
+        true
     }
 
     fn start_capturing(&mut self) {
