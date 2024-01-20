@@ -150,11 +150,11 @@ impl SideChannelOperands for ArmInsnDetail<'_> {
 }
 
 pub trait SideChannelOperandsValues {
-    fn sca_operands_values<D>(&self, emu: &Unicorn<D>) -> ArrayVec<u64, 20>;
+    fn sca_operands_values<D>(&self, emu: &Unicorn<D>) -> ArrayVec<u64, 8>;
 }
 
 impl SideChannelOperandsValues for Vec<ArmOperand> {
-    fn sca_operands_values<D>(&self, emu: &Unicorn<D>) -> ArrayVec<u64, 20> {
+    fn sca_operands_values<D>(&self, emu: &Unicorn<D>) -> ArrayVec<u64, 8> {
         let mut result = ArrayVec::new();
         for op in self {
             match op.op_type {

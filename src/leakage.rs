@@ -2,10 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-use capstone::{arch::arm::ArmInsnDetail, Insn};
+use crate::ScaData;
 use log::debug;
-
-use crate::asmutils::SideChannelOperands;
 
 pub trait HammingWeight {
     /// Calculation of hamming weight (i.e. number of 1-bits in value)
@@ -45,16 +43,13 @@ impl HammingWeight for u128 {
 /// Generic Leakage Model
 pub trait LeakageModel {
     /// Calculate the value of the trace point at given instruction
-    fn calculate(
-        &mut self,
-        instruction: &Insn,
-        instruction_detail: &ArmInsnDetail,
-        regs_before: &[u64],
-        regs_after: &[u64],
-    ) -> f32;
+    fn calculate(&self, scadata: &[ScaData]) -> f32;
 
     /// Calculate leakage value for given memory change
     fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32;
+
+    /// Number of cycles that are incoporated into the leakage calculation
+    fn cycles_for_calc(&self) -> usize;
 }
 
 /// Hamming Weight leakage.
@@ -74,13 +69,16 @@ impl Default for HammingWeightLeakage {
 }
 
 impl LeakageModel for HammingWeightLeakage {
-    fn calculate(
-        &mut self,
-        instruction: &Insn,
-        instruction_detail: &ArmInsnDetail,
-        regs_before: &[u64],
-        regs_after: &[u64],
-    ) -> f32 {
+    #[inline]
+    fn cycles_for_calc(&self) -> usize {
+        1
+    }
+
+    fn calculate(&self, scadata: &[ScaData]) -> f32 {
+        assert!(scadata.len() == 1);
+        let scadata = &scadata[0];
+        let regs_before = scadata.regvalues_before.as_ref();
+        let regs_after = scadata.regvalues_after.as_ref();
         let val = regs_after
             .iter()
             .zip(regs_before)
@@ -93,10 +91,10 @@ impl LeakageModel for HammingWeightLeakage {
             })
             .sum();
         debug!(
-            "Calculate for {:} {:} {:?}: {:x?} -> {:x?} => {:?}",
-            instruction.mnemonic().unwrap(),
-            instruction.op_str().unwrap(),
-            instruction_detail.sca_operands(),
+            "Calculate for {:} {:}: {:x?} -> {:x?} => {:?}",
+            scadata.instruction.mnemonic().unwrap(),
+            scadata.instruction.op_str().unwrap(),
+            // instruction_detail.sca_operands(),
             regs_before,
             regs_after,
             val
@@ -128,23 +126,26 @@ impl Default for HammingDistanceLeakage {
 }
 
 impl LeakageModel for HammingDistanceLeakage {
-    fn calculate(
-        &mut self,
-        instruction: &Insn,
-        instruction_detail: &ArmInsnDetail,
-        regs_before: &[u64],
-        regs_after: &[u64],
-    ) -> f32 {
+    #[inline]
+    fn cycles_for_calc(&self) -> usize {
+        1
+    }
+
+    fn calculate(&self, scadata: &[ScaData]) -> f32 {
+        assert!(scadata.len() == 1);
+        let scadata = &scadata[0];
+        let regs_before = scadata.regvalues_before.as_ref();
+        let regs_after = scadata.regvalues_after.as_ref();
         let val = regs_after
             .iter()
             .zip(regs_before)
             .map(|(&val_after, &val_before)| (val_after ^ val_before).hamming() as f32)
             .sum();
         debug!(
-            "Calculate for {:} {:} {:?}: {:x?} -> {:x?} => {:?}",
-            instruction.mnemonic().unwrap(),
-            instruction.op_str().unwrap(),
-            instruction_detail.sca_operands(),
+            "Calculate for {:} {:}: {:x?} -> {:x?} => {:?}",
+            scadata.instruction.mnemonic().unwrap(),
+            scadata.instruction.op_str().unwrap(),
+            // instruction_detail.sca_operands(),
             regs_before,
             regs_after,
             val

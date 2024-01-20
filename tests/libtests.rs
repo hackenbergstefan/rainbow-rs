@@ -8,7 +8,7 @@ use rainbow_rs::{
     communication::Communication,
     itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
     leakage::{HammingDistanceLeakage, HammingWeightLeakage, LeakageModel},
-    ThumbTraceEmulator, ThumbTraceEmulatorTrait,
+    ScaData, ThumbTraceEmulator, ThumbTraceEmulatorTrait,
 };
 use unicorn_engine::unicorn_const::Permission;
 
@@ -48,18 +48,16 @@ impl NullLeakage {
 }
 
 impl LeakageModel for NullLeakage {
-    fn calculate(
-        &mut self,
-        _instruction: &Insn,
-        _instruction_detail: &ArmInsnDetail,
-        _regs_before: &[u64],
-        _regs_after: &[u64],
-    ) -> f32 {
+    fn calculate(&self, _scadata: &[ScaData]) -> f32 {
         0.0
     }
 
     fn calculate_memory(&mut self, _mem_before: u64, _mem_after: u64) -> f32 {
         0.0
+    }
+
+    fn cycles_for_calc(&self) -> usize {
+        1
     }
 }
 

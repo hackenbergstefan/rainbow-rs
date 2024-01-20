@@ -41,13 +41,16 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
     itc: BiChannel<ITCResponse, ITCRequest>,
 }
 
+pub struct ScaData<'a> {
+    instruction: &'a OwnedInsn<'static>,
+    registers: &'a Vec<ArmOperand>,
+    regvalues_before: ArrayVec<u64, 8>,
+    regvalues_after: ArrayVec<u64, 8>,
+}
+
 pub struct Tracing<'a> {
     capturing: bool,
-    register_values: Option<(
-        &'a OwnedInsn<'static>,
-        &'a Vec<ArmOperand>,
-        ArrayVec<u64, 20>,
-    )>,
+    register_values: ArrayVec<ScaData<'a>, 16>,
     trace: Vec<f32>,
     instruction_trace: Vec<u32>,
     temporary_memory_leakage: ArrayVec<f32, 16>,
@@ -56,7 +59,7 @@ pub struct Tracing<'a> {
 impl<'a> Tracing<'a> {
     fn start_capturing(&mut self) {
         self.capturing = true;
-        self.register_values = None;
+        self.register_values.clear();
         self.trace.clear();
         self.instruction_trace.clear();
     }
@@ -118,7 +121,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 hooks: Vec::new(),
                 leakage,
                 tracing: Tracing {
-                    register_values: None,
+                    register_values: ArrayVec::new(),
                     trace: Vec::new(),
                     instruction_trace: Vec::new(),
                     capturing: false,
@@ -243,30 +246,26 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
 
         // Add tracepoint if capturing
         if inner.tracing.capturing {
-            let (instruction, next_instruction_registers) =
-                inner.elfinfo.get_instruction(&address).unwrap();
-            let reg_values_before_next_instruction =
-                next_instruction_registers.sca_operands_values(self);
+            // Extend last ScaData by updated register values
+            if let Some(scadata) = inner.tracing.register_values.last() {
+                self.get_data_mut()
+                    .tracing
+                    .register_values
+                    .last_mut()
+                    .unwrap()
+                    .regvalues_after = scadata.registers.sca_operands_values(self);
+            }
 
-            if let Some((instruction, instruction_registers, _)) =
-                inner.tracing.register_values.as_ref()
-            {
-                let address = instruction.address();
-                let register_values = instruction_registers.sca_operands_values(self);
-                let instruction_detail = inner.capstone.insn_detail(instruction).unwrap();
-                let instruction_detail = instruction_detail.arch_detail();
-                let instruction_detail = instruction_detail.arm().unwrap();
+            // Calculate leakage if ready
+            let inner = self.get_data();
+            if inner.tracing.register_values.len() == inner.leakage.cycles_for_calc() {
                 let inner_mut = self.get_data_mut();
-                let (instruction, _, register_values_before) =
-                    inner_mut.tracing.register_values.as_ref().unwrap();
-                let leakage = inner_mut.leakage.calculate(
-                    instruction,
-                    instruction_detail,
-                    register_values_before,
-                    &register_values,
-                );
+                let leakage = inner_mut
+                    .leakage
+                    .calculate(inner_mut.tracing.register_values.as_slice());
                 inner_mut.tracing.trace.push(leakage);
                 inner_mut.tracing.instruction_trace.push(address as u32);
+                inner_mut.tracing.register_values.clear();
 
                 // Append cached memory leakages
                 for &mem_leakage in &inner_mut.tracing.temporary_memory_leakage {
@@ -276,11 +275,18 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 inner_mut.tracing.temporary_memory_leakage.clear();
             }
 
-            self.get_data_mut().tracing.register_values = Some((
-                instruction,
-                next_instruction_registers,
-                reg_values_before_next_instruction,
-            ));
+            // Append to sidechannel data
+            {
+                let (instruction, instruction_registers) =
+                    self.get_data().elfinfo.get_instruction(&address).unwrap();
+                let regvalues_before = instruction_registers.sca_operands_values(self);
+                self.get_data_mut().tracing.register_values.push(ScaData {
+                    instruction,
+                    registers: instruction_registers,
+                    regvalues_before,
+                    regvalues_after: ArrayVec::new(),
+                });
+            }
         }
     }
 
