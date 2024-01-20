@@ -7,17 +7,46 @@ use log::debug;
 
 use crate::asmutils::SideChannelOperands;
 
-/// Calculation of hamming weight (i.e. number of 1-bits in value)
-#[inline]
-pub fn hamming_weight(value: u32) -> u32 {
-    value.count_ones()
+pub trait HammingWeight {
+    /// Calculation of hamming weight (i.e. number of 1-bits in value)
+    fn hamming(self) -> u32;
+}
+
+impl HammingWeight for u8 {
+    fn hamming(self) -> u32 {
+        self.count_ones()
+    }
+}
+
+impl HammingWeight for u16 {
+    fn hamming(self) -> u32 {
+        self.count_ones()
+    }
+}
+
+impl HammingWeight for u32 {
+    fn hamming(self) -> u32 {
+        self.count_ones()
+    }
+}
+
+impl HammingWeight for u64 {
+    fn hamming(self) -> u32 {
+        self.count_ones()
+    }
+}
+
+impl HammingWeight for u128 {
+    fn hamming(self) -> u32 {
+        self.count_ones()
+    }
 }
 
 /// Generic Leakage Model
 pub trait LeakageModel {
     /// Calculate the value of the trace point at given instruction
     fn calculate(
-        &self,
+        &mut self,
         instruction: &Insn,
         instruction_detail: &ArmInsnDetail,
         regs_before: &[u64],
@@ -25,7 +54,7 @@ pub trait LeakageModel {
     ) -> f32;
 
     /// Calculate leakage value for given memory change
-    fn calculate_memory(&self, mem_before: u64, mem_after: u64) -> f32;
+    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32;
 }
 
 /// Hamming Weight leakage.
@@ -46,7 +75,7 @@ impl Default for HammingWeightLeakage {
 
 impl LeakageModel for HammingWeightLeakage {
     fn calculate(
-        &self,
+        &mut self,
         instruction: &Insn,
         instruction_detail: &ArmInsnDetail,
         regs_before: &[u64],
@@ -57,7 +86,7 @@ impl LeakageModel for HammingWeightLeakage {
             .zip(regs_before)
             .map(|(&val_after, &val_before)| {
                 if val_after != val_before {
-                    hamming_weight(val_after as u32) as f32
+                    val_after.hamming() as f32
                 } else {
                     0.0
                 }
@@ -75,8 +104,8 @@ impl LeakageModel for HammingWeightLeakage {
         val
     }
 
-    fn calculate_memory(&self, mem_before: u64, mem_after: u64) -> f32 {
-        let val = hamming_weight(mem_after as u32) as f32;
+    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32 {
+        let val = mem_after.hamming() as f32;
         debug!("HammingWeightLeakage::calculate_memory {mem_before:08x} {mem_after:08x} => {val}");
         val
     }
@@ -100,7 +129,7 @@ impl Default for HammingDistanceLeakage {
 
 impl LeakageModel for HammingDistanceLeakage {
     fn calculate(
-        &self,
+        &mut self,
         instruction: &Insn,
         instruction_detail: &ArmInsnDetail,
         regs_before: &[u64],
@@ -109,7 +138,7 @@ impl LeakageModel for HammingDistanceLeakage {
         let val = regs_after
             .iter()
             .zip(regs_before)
-            .map(|(&val_after, &val_before)| hamming_weight((val_after ^ val_before) as u32) as f32)
+            .map(|(&val_after, &val_before)| (val_after ^ val_before).hamming() as f32)
             .sum();
         debug!(
             "Calculate for {:} {:} {:?}: {:x?} -> {:x?} => {:?}",
@@ -123,7 +152,7 @@ impl LeakageModel for HammingDistanceLeakage {
         val
     }
 
-    fn calculate_memory(&self, mem_before: u64, mem_after: u64) -> f32 {
-        hamming_weight((mem_before ^ mem_after) as u32) as f32
+    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32 {
+        (mem_before ^ mem_after).hamming() as f32
     }
 }

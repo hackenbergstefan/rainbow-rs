@@ -210,10 +210,11 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         if log::log_enabled!(log::Level::Info) {
             let (instruction, _) = inner.elfinfo.get_instruction(&address).unwrap();
             info!(
-                "Executing {:08x}: {:} {:} operands: {:?}",
+                "Executing {:08x}: {:} {:} [{:?}] operands: {:?}\n\t read: {:?} write: {:?} ({:?})",
                 instruction.address(),
                 instruction.mnemonic().unwrap(),
                 instruction.op_str().unwrap(),
+                instruction.id(),
                 inner
                     .capstone
                     .insn_detail(instruction)
@@ -222,7 +223,21 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     .arm()
                     .unwrap()
                     .operands()
-                    .collect::<Vec<ArmOperand>>()
+                    .collect::<Vec<ArmOperand>>(),
+                inner.capstone.insn_detail(instruction).unwrap().regs_read(),
+                inner
+                    .capstone
+                    .insn_detail(instruction)
+                    .unwrap()
+                    .regs_write(),
+                inner
+                    .capstone
+                    .insn_detail(instruction)
+                    .unwrap()
+                    .groups()
+                    .iter()
+                    .map(|g| inner.capstone.group_name(*g).unwrap())
+                    .collect::<String>()
             );
         }
 
@@ -233,7 +248,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
             let reg_values_before_next_instruction =
                 next_instruction_registers.sca_operands_values(self);
 
-            if let Some((instruction, instruction_registers, register_values_before)) =
+            if let Some((instruction, instruction_registers, _)) =
                 inner.tracing.register_values.as_ref()
             {
                 let address = instruction.address();
@@ -241,13 +256,15 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 let instruction_detail = inner.capstone.insn_detail(instruction).unwrap();
                 let instruction_detail = instruction_detail.arch_detail();
                 let instruction_detail = instruction_detail.arm().unwrap();
-                let leakage = self.get_data().leakage.calculate(
+                let inner_mut = self.get_data_mut();
+                let (instruction, _, register_values_before) =
+                    inner_mut.tracing.register_values.as_ref().unwrap();
+                let leakage = inner_mut.leakage.calculate(
                     instruction,
                     instruction_detail,
                     register_values_before,
                     &register_values,
                 );
-                let inner_mut = self.get_data_mut();
                 inner_mut.tracing.trace.push(leakage);
                 inner_mut.tracing.instruction_trace.push(address as u32);
 

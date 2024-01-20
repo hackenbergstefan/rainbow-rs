@@ -49,7 +49,7 @@ impl NullLeakage {
 
 impl LeakageModel for NullLeakage {
     fn calculate(
-        &self,
+        &mut self,
         _instruction: &Insn,
         _instruction_detail: &ArmInsnDetail,
         _regs_before: &[u64],
@@ -58,7 +58,7 @@ impl LeakageModel for NullLeakage {
         0.0
     }
 
-    fn calculate_memory(&self, _mem_before: u64, _mem_after: u64) -> f32 {
+    fn calculate_memory(&mut self, _mem_before: u64, _mem_after: u64) -> f32 {
         0.0
     }
 }
