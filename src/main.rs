@@ -11,16 +11,23 @@ use std::{
 };
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
 use rainbow_rs::{
     asmutils::ElfInfo,
     itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
-    leakage::HammingWeightLeakage,
+    leakage::{ElmoPowerLeakage, HammingDistanceLeakage, HammingWeightLeakage},
     new_simpleserialsocket_stm32f4, ThumbTraceEmulatorTrait,
 };
+
+#[derive(ValueEnum, Debug, Clone)]
+enum LeakageModel {
+    HammingWeight,
+    HammingDistance,
+    Elmo,
+}
 
 #[derive(Parser, Debug)]
 #[command(version)]
@@ -28,6 +35,12 @@ struct CmdlineArgs {
     /// Path to elffile to read from
     #[arg(value_parser = file_exists)]
     elffile: String,
+    /// Leakage model
+    #[arg(long)]
+    leakage: LeakageModel,
+    /// Path to coefficient file if leakage is elmo
+    #[arg(long, value_parser = file_exists)]
+    coefficientfile: Option<String>,
     /// Host and port of communication socket
     #[arg(short, long, default_value = "127.0.0.1:6666")]
     socket: String,
@@ -115,15 +128,37 @@ fn main() -> Result<()> {
 
     let (server, client) = create_inter_thread_channels();
     let elfinfo = ElfInfo::new_from_elffile(&buf)?;
+    let coeffs = args.coefficientfile.unwrap();
     thread::scope(|scope| -> Result<()> {
         let threads = Vec::from_iter((0..args.threads).map(|_| {
             let s = scope.spawn(|| -> Result<()> {
-                let mut emu = new_simpleserialsocket_stm32f4(
-                    &elfinfo,
-                    HammingWeightLeakage::new(),
-                    client.clone(),
-                )?;
-                emu.start()?;
+                match args.leakage {
+                    LeakageModel::HammingWeight => {
+                        let mut emu = new_simpleserialsocket_stm32f4(
+                            &elfinfo,
+                            HammingWeightLeakage::new(),
+                            client.clone(),
+                        )?;
+                        emu.start()?;
+                    }
+
+                    LeakageModel::HammingDistance => {
+                        let mut emu = new_simpleserialsocket_stm32f4(
+                            &elfinfo,
+                            HammingDistanceLeakage::new(),
+                            client.clone(),
+                        )?;
+                        emu.start()?;
+                    }
+                    LeakageModel::Elmo => {
+                        let mut emu = new_simpleserialsocket_stm32f4(
+                            &elfinfo,
+                            ElmoPowerLeakage::new(&coeffs),
+                            client.clone(),
+                        )?;
+                        emu.start()?;
+                    }
+                };
                 Ok(())
             });
             s

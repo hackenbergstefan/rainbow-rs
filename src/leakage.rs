@@ -2,9 +2,8 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::iter;
-
 use crate::ScaData;
+use capstone::{arch::arm::ArmInsn, OwnedInsn};
 use log::debug;
 
 pub trait HammingWeight {
@@ -254,25 +253,34 @@ impl ElmoPowerLeakage {
         current: &[u64],
         _subsequent: &[u64],
     ) -> f32 {
-        let hw_op1 = current[0].hamming();
-        let hw_op2 = current[1].hamming();
+        if current_instruction_type == 5 {
+            return self.coefficients.constant[0] as f32;
+        }
 
-        let hd_op1 = (current[0] ^ previous[0]).hamming();
-        let hd_op2 = (current[1] ^ previous[1]).hamming();
+        let current0 = current.get(0).or(Some(&0)).unwrap();
+        let current1 = current.get(1).or(Some(&0)).unwrap();
+        let previous0 = previous.get(0).or(Some(&0)).unwrap();
+        let previous1 = previous.get(1).or(Some(&0)).unwrap();
 
-        let bitflips_op1 = current[0] ^ previous[0];
-        let bitflips_op2 = current[1] ^ previous[1];
+        let hw_op1 = current0.hamming();
+        let hw_op2 = current1.hamming();
+
+        let hd_op1 = (current0 ^ previous0).hamming();
+        let hd_op2 = (current1 ^ previous1).hamming();
+
+        let bitflips_op1 = current0 ^ previous0;
+        let bitflips_op2 = current1 ^ previous1;
 
         // Calculate leakage for each bit
         let op1_data: f64 = (0..32)
             .map(|i| {
-                ((current[0] >> i) & 1) as f64
+                ((current0 >> i) & 1) as f64
                     * self.coefficients.operand1[i][current_instruction_type]
             })
             .sum();
         let op2_data: f64 = (0..32)
             .map(|i| {
-                ((current[1] >> i) & 1) as f64
+                ((current1 >> i) & 1) as f64
                     * self.coefficients.operand2[i][current_instruction_type]
             })
             .sum();
@@ -298,7 +306,7 @@ impl ElmoPowerLeakage {
         let mut hd_op1_previous_instruction_data: f64 = 0.0;
         let mut hd_op2_previous_instruction_data: f64 = 0.0;
 
-        if previous_instruction_type > 0 {
+        if previous_instruction_type > 0 && previous_instruction_type < 5 {
             previous_instruction_data = self.coefficients.previous_instructions
                 [previous_instruction_type - 1][current_instruction_type];
             hw_op1_previous_instruction_data = self.coefficients.hw_operand1_previous_instruction
@@ -321,7 +329,7 @@ impl ElmoPowerLeakage {
         let mut hd_op1_subsequent_instruction_data: f64 = 0.0;
         let mut hd_op2_subsequent_instruction_data: f64 = 0.0;
 
-        if subsequent_instruction_type > 0 {
+        if subsequent_instruction_type > 0 && subsequent_instruction_type < 5 {
             subsequent_instruction_data = self.coefficients.subsequent_instructions
                 [subsequent_instruction_type - 1][current_instruction_type];
             hw_op1_subsequent_instruction_data =
@@ -360,6 +368,35 @@ impl ElmoPowerLeakage {
 
         leakage as f32
     }
+
+    pub fn instruction_type(instruction: &OwnedInsn) -> usize {
+        let id = instruction.id().0;
+        match id {
+            id if id == ArmInsn::ARM_INS_ADD as u32 => 0,
+            id if id == ArmInsn::ARM_INS_SUB as u32 => 0,
+            id if id == ArmInsn::ARM_INS_AND as u32 => 0,
+            id if id == ArmInsn::ARM_INS_CMP as u32 => 0,
+            id if id == ArmInsn::ARM_INS_CPS as u32 => 0,
+            id if id == ArmInsn::ARM_INS_EOR as u32 => 0,
+            id if id == ArmInsn::ARM_INS_MOV as u32 => 0,
+            id if id == ArmInsn::ARM_INS_ORR as u32 => 0,
+
+            id if id == ArmInsn::ARM_INS_LSL as u32 => 1,
+            id if id == ArmInsn::ARM_INS_LSR as u32 => 1,
+            id if id == ArmInsn::ARM_INS_ROR as u32 => 1,
+
+            id if id == ArmInsn::ARM_INS_STR as u32 => 2,
+            id if id == ArmInsn::ARM_INS_STRH as u32 => 2,
+            id if id == ArmInsn::ARM_INS_STRB as u32 => 2,
+
+            id if id == ArmInsn::ARM_INS_LDR as u32 => 3,
+            id if id == ArmInsn::ARM_INS_LDRH as u32 => 3,
+            id if id == ArmInsn::ARM_INS_LDRB as u32 => 3,
+
+            id if id == ArmInsn::ARM_INS_MUL as u32 => 4,
+            _ => 5,
+        }
+    }
 }
 
 impl LeakageModel for ElmoPowerLeakage {
@@ -371,9 +408,9 @@ impl LeakageModel for ElmoPowerLeakage {
     fn calculate(&self, scadata: &[ScaData]) -> f32 {
         assert!(scadata.len() == 3);
         return self.calculate_powermodel(
-            0,
-            0,
-            0,
+            ElmoPowerLeakage::instruction_type(scadata[0].instruction),
+            ElmoPowerLeakage::instruction_type(scadata[1].instruction),
+            ElmoPowerLeakage::instruction_type(scadata[2].instruction),
             scadata[0].regvalues_before.as_ref(),
             scadata[1].regvalues_before.as_ref(),
             scadata[2].regvalues_before.as_ref(),

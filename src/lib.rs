@@ -208,13 +208,13 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 return;
             }
         }
-
         // Log current instruction
         if log::log_enabled!(log::Level::Info) {
             let (instruction, _) = inner.elfinfo.get_instruction(&address).unwrap();
             info!(
-                "Executing {:08x}: {:} {:} [{:?}] operands: {:?}\n\t read: {:?} write: {:?} ({:?})",
+                "Executing {:08x}: {:} {:} {:} [{:?}] operands: {:?}\n\t read: {:?} write: {:?} ({:?})",
                 instruction.address(),
+                inner.capstone.insn_name(instruction.id()).unwrap(),
                 instruction.mnemonic().unwrap(),
                 instruction.op_str().unwrap(),
                 instruction.id(),
@@ -265,7 +265,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     .calculate(inner_mut.tracing.register_values.as_slice());
                 inner_mut.tracing.trace.push(leakage);
                 inner_mut.tracing.instruction_trace.push(address as u32);
-                inner_mut.tracing.register_values.clear();
+                inner_mut.tracing.register_values.pop_at(0);
 
                 // Append cached memory leakages
                 for &mem_leakage in &inner_mut.tracing.temporary_memory_leakage {
