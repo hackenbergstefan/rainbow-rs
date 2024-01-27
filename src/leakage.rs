@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: MIT
 
 use crate::ScaData;
+use arrayvec::ArrayVec;
 use capstone::{arch::arm::ArmInsn, OwnedInsn};
 use log::debug;
 
@@ -41,13 +42,16 @@ impl HammingWeight for u128 {
     }
 }
 
+#[derive(Debug)]
+pub struct Leakage {
+    pub address: u64,
+    pub values: ArrayVec<f32, 8>,
+}
+
 /// Generic Leakage Model
 pub trait LeakageModel {
     /// Calculate the value of the trace point at given instruction
-    fn calculate(&self, scadata: &[ScaData]) -> f32;
-
-    /// Calculate leakage value for given memory change
-    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32;
+    fn calculate(&self, scadata: &[ScaData]) -> Leakage;
 
     /// Number of cycles that are incoporated into the leakage calculation
     fn cycles_for_calc(&self) -> usize;
@@ -75,38 +79,49 @@ impl LeakageModel for HammingWeightLeakage {
         1
     }
 
-    fn calculate(&self, scadata: &[ScaData]) -> f32 {
+    fn calculate(&self, scadata: &[ScaData]) -> Leakage {
+        debug!("Calculate HammingWeightLeakage for {:?}", scadata);
+
         assert!(scadata.len() == 1);
         let scadata = &scadata[0];
-        let regs_before = scadata.regvalues_before.as_ref();
-        let regs_after = scadata.regvalues_after.as_ref();
-        let val = regs_after
-            .iter()
-            .zip(regs_before)
-            .map(|(&val_after, &val_before)| {
-                if val_after != val_before {
-                    val_after.hamming() as f32
-                } else {
-                    0.0
-                }
-            })
-            .sum();
-        debug!(
-            "Calculate for {:} {:}: {:x?} -> {:x?} => {:?}",
-            scadata.instruction.mnemonic().unwrap(),
-            scadata.instruction.op_str().unwrap(),
-            // instruction_detail.sca_operands(),
-            regs_before,
-            regs_after,
-            val
-        );
-        val
-    }
 
-    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32 {
-        let val = mem_after.hamming() as f32;
-        debug!("HammingWeightLeakage::calculate_memory {mem_before:08x} {mem_after:08x} => {val}");
-        val
+        // Process register leakage
+        let mut register_leakage = {
+            let regs_before = scadata.regvalues_before.as_ref();
+            let regs_after = scadata.regvalues_after.as_ref();
+            regs_after
+                .iter()
+                .zip(regs_before)
+                .map(|(&val_after, &val_before)| {
+                    if val_after != val_before {
+                        val_after.hamming() as f32
+                    } else {
+                        0.0
+                    }
+                })
+                .sum()
+        };
+
+        // Process memory leakage
+        if !scadata.memory_before.is_empty() {
+            register_leakage += scadata
+                .memory_before
+                .iter()
+                .map(|x| x.hamming())
+                .sum::<u32>() as f32;
+            register_leakage += scadata
+                .memory_after
+                .iter()
+                .map(|x| x.hamming())
+                .sum::<u32>() as f32;
+        }
+
+        let mut leakage = Leakage {
+            address: scadata.instruction.address(),
+            values: ArrayVec::new(),
+        };
+        leakage.values.push(register_leakage);
+        leakage
     }
 }
 
@@ -132,30 +147,33 @@ impl LeakageModel for HammingDistanceLeakage {
         1
     }
 
-    fn calculate(&self, scadata: &[ScaData]) -> f32 {
+    fn calculate(&self, scadata: &[ScaData]) -> Leakage {
         assert!(scadata.len() == 1);
         let scadata = &scadata[0];
-        let regs_before = scadata.regvalues_before.as_ref();
-        let regs_after = scadata.regvalues_after.as_ref();
-        let val = regs_after
-            .iter()
-            .zip(regs_before)
-            .map(|(&val_after, &val_before)| (val_after ^ val_before).hamming() as f32)
-            .sum();
-        debug!(
-            "Calculate for {:} {:}: {:x?} -> {:x?} => {:?}",
-            scadata.instruction.mnemonic().unwrap(),
-            scadata.instruction.op_str().unwrap(),
-            // instruction_detail.sca_operands(),
-            regs_before,
-            regs_after,
-            val
-        );
-        val
-    }
+        let mut register_leakage = {
+            let regs_before = scadata.regvalues_before.as_ref();
+            let regs_after = scadata.regvalues_after.as_ref();
+            regs_after
+                .iter()
+                .zip(regs_before)
+                .map(|(&val_after, &val_before)| (val_after ^ val_before).hamming() as f32)
+                .sum()
+        };
 
-    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32 {
-        (mem_before ^ mem_after).hamming() as f32
+        // Process memory leakage
+        register_leakage += scadata
+            .memory_before
+            .iter()
+            .zip(scadata.memory_after.iter())
+            .map(|(before, after)| (before ^ after).hamming())
+            .sum::<u32>() as f32;
+
+        let mut leakage = Leakage {
+            address: scadata.instruction.address(),
+            values: ArrayVec::new(),
+        };
+        leakage.values.push(register_leakage);
+        leakage
     }
 }
 
@@ -405,19 +423,16 @@ impl LeakageModel for ElmoPowerLeakage {
         3
     }
 
-    fn calculate(&self, scadata: &[ScaData]) -> f32 {
-        assert!(scadata.len() == 3);
-        return self.calculate_powermodel(
-            ElmoPowerLeakage::instruction_type(scadata[0].instruction),
-            ElmoPowerLeakage::instruction_type(scadata[1].instruction),
-            ElmoPowerLeakage::instruction_type(scadata[2].instruction),
-            scadata[0].regvalues_before.as_ref(),
-            scadata[1].regvalues_before.as_ref(),
-            scadata[2].regvalues_before.as_ref(),
-        );
-    }
-
-    fn calculate_memory(&mut self, mem_before: u64, mem_after: u64) -> f32 {
-        0.0
+    fn calculate(&self, scadata: &[ScaData]) -> Leakage {
+        todo!();
+        // assert!(scadata.len() == 3);
+        // return self.calculate_powermodel(
+        //     ElmoPowerLeakage::instruction_type(scadata[0].instruction),
+        //     ElmoPowerLeakage::instruction_type(scadata[1].instruction),
+        //     ElmoPowerLeakage::instruction_type(scadata[2].instruction),
+        //     scadata[0].regvalues_before.as_ref(),
+        //     scadata[1].regvalues_before.as_ref(),
+        //     scadata[2].regvalues_before.as_ref(),
+        // );
     }
 }

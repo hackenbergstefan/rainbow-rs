@@ -2,12 +2,13 @@
 //
 // SPDX-License-Identifier: MIT
 
+use arrayvec::ArrayVec;
 use capstone::{arch::arm::ArmInsnDetail, Insn};
 use rainbow_rs::{
     asmutils::{ElfInfo, Segment},
     communication::Communication,
     itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
-    leakage::{HammingDistanceLeakage, HammingWeightLeakage, LeakageModel},
+    leakage::{HammingDistanceLeakage, HammingWeightLeakage, Leakage, LeakageModel},
     ScaData, ThumbTraceEmulator, ThumbTraceEmulatorTrait,
 };
 use unicorn_engine::unicorn_const::Permission;
@@ -48,12 +49,11 @@ impl NullLeakage {
 }
 
 impl LeakageModel for NullLeakage {
-    fn calculate(&self, _scadata: &[ScaData]) -> f32 {
-        0.0
-    }
-
-    fn calculate_memory(&mut self, _mem_before: u64, _mem_after: u64) -> f32 {
-        0.0
+    fn calculate(&self, _scadata: &[ScaData]) -> Leakage {
+        Leakage {
+            address: 0,
+            values: ArrayVec::new(),
+        }
     }
 
     fn cycles_for_calc(&self) -> usize {
@@ -117,8 +117,30 @@ fn test_hamming_weight_leakage() {
         ),
         &vec![0.0, 2.0, 3.0, 4.0]
     );
+}
 
-    // Test memory operations
+#[test]
+fn test_hamming_weight_leakage_memory() {
+    assert_eq!(
+        &generate_leakage(
+            HammingWeightLeakage::new(),
+            Segment(
+                0x1000_0000,
+                vec![
+                    0x00, 0xBF, // nop for hook
+                    0x5f, 0xf4, 0x80, 0x70, // movs r0, #0x0100
+                    0xc1, 0xf2, 0x00, 0x00, // movt r0, #0x1000
+                    0x01, 0x21, // movs r1, #1
+                    0x01, 0x60, // str r1, [r0]
+                    0x02, 0x68, // ldr r2, [r0]
+                    0x00, 0xBF, // nop
+                    0x00, 0xBF, // nop for hook
+                ],
+            )
+        ),
+        &vec![1.0, 2.0, 1.0, 1.0, 2.0]
+    );
+
     assert_eq!(
         &generate_leakage(
             HammingWeightLeakage::new(),
@@ -138,7 +160,7 @@ fn test_hamming_weight_leakage() {
                 ],
             )
         ),
-        &vec![1.0, 2.0, 1.0, 0.0, 1.0, 8.0, 0.0, 8.0, 0.0, 1.0, 8.0, 0.0, 0.0]
+        &vec![1.0, 2.0, 1.0, 1.0, 8.0, 9.0, 17.0]
     );
 }
 
@@ -163,8 +185,30 @@ fn test_hamming_distance_leakage() {
         ),
         &vec![1.0, 1.0, 1.0, 1.0]
     );
+}
 
-    // Test memory operations
+#[test]
+fn test_hamming_distance_leakage_memory() {
+    assert_eq!(
+        &generate_leakage(
+            HammingWeightLeakage::new(),
+            Segment(
+                0x1000_0000,
+                vec![
+                    0x00, 0xBF, // nop for hook
+                    0x5f, 0xf4, 0x80, 0x70, // movs r0, #0x0100
+                    0xc1, 0xf2, 0x00, 0x00, // movt r0, #0x1000
+                    0x01, 0x21, // movs r1, #1
+                    0x01, 0x60, // str r1, [r0]
+                    0x02, 0x68, // ldr r2, [r0]
+                    0x00, 0xBF, // nop
+                    0x00, 0xBF, // nop for hook
+                ],
+            )
+        ),
+        &vec![1.0, 2.0, 1.0, 1.0, 2.0]
+    );
+
     assert_eq!(
         &generate_leakage(
             HammingDistanceLeakage::new(),
@@ -186,7 +230,7 @@ fn test_hamming_distance_leakage() {
                 ],
             )
         ),
-        &vec![1.0, 1.0, 1.0, 0.0, 1.0, 14.0, 6.0, 0.0, 19.0, 0.0, 8.0, 0.0, 6.0]
+        &vec![1.0, 1.0, 1.0, 1.0, 14.0, 6.0, 19.0, 8.0, 6.0]
     );
 }
 
