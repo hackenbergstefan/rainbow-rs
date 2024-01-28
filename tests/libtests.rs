@@ -49,7 +49,7 @@ impl NullLeakage {
 }
 
 impl LeakageModel for NullLeakage {
-    fn calculate(&self, _scadata: &[ScaData]) -> Leakage {
+    fn calculate(&mut self, _scadata: &[ScaData]) -> Leakage {
         Leakage {
             address: 0,
             values: ArrayVec::new(),

@@ -5,7 +5,7 @@
 use crate::ScaData;
 use arrayvec::ArrayVec;
 use capstone::{arch::arm::ArmInsn, OwnedInsn};
-use log::debug;
+use log::{debug, info};
 
 pub trait HammingWeight {
     /// Calculation of hamming weight (i.e. number of 1-bits in value)
@@ -45,13 +45,13 @@ impl HammingWeight for u128 {
 #[derive(Debug)]
 pub struct Leakage {
     pub address: u64,
-    pub values: ArrayVec<f32, 8>,
+    pub values: ArrayVec<f32, 16>,
 }
 
 /// Generic Leakage Model
 pub trait LeakageModel {
     /// Calculate the value of the trace point at given instruction
-    fn calculate(&self, scadata: &[ScaData]) -> Leakage;
+    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage;
 
     /// Number of cycles that are incoporated into the leakage calculation
     fn cycles_for_calc(&self) -> usize;
@@ -79,7 +79,7 @@ impl LeakageModel for HammingWeightLeakage {
         1
     }
 
-    fn calculate(&self, scadata: &[ScaData]) -> Leakage {
+    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage {
         debug!("Calculate HammingWeightLeakage for {:?}", scadata);
 
         assert!(scadata.len() == 1);
@@ -147,7 +147,7 @@ impl LeakageModel for HammingDistanceLeakage {
         1
     }
 
-    fn calculate(&self, scadata: &[ScaData]) -> Leakage {
+    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage {
         assert!(scadata.len() == 1);
         let scadata = &scadata[0];
         let mut register_leakage = {
@@ -253,32 +253,74 @@ impl ElmoPowerLeakageCoefficients {
 /// Elmo Power Leakage Model
 pub struct ElmoPowerLeakage {
     coefficients: ElmoPowerLeakageCoefficients,
+    readbus: u64,
+    writebus: u64,
+    resistance: f32,
+    supplyvoltage: f32,
 }
 
 impl ElmoPowerLeakage {
     pub fn new(coefficient_file: &str) -> Self {
         Self {
             coefficients: ElmoPowerLeakageCoefficients::new(coefficient_file),
+            readbus: 0,
+            writebus: 0,
+            resistance: 360.0,
+            supplyvoltage: 3.0,
         }
     }
 
     fn calculate_powermodel(
         &self,
-        previous_instruction_type: usize,
-        current_instruction_type: usize,
-        subsequent_instruction_type: usize,
-        previous: &[u64],
-        current: &[u64],
-        _subsequent: &[u64],
+        previous: &ScaData,
+        current: &ScaData,
+        subsequent: &ScaData,
     ) -> f32 {
+        let current_instruction_type = ElmoPowerLeakage::instruction_type(current.instruction);
+        let previous_instruction_type = ElmoPowerLeakage::instruction_type(previous.instruction);
+        let subsequent_instruction_type =
+            ElmoPowerLeakage::instruction_type(subsequent.instruction);
+
         if current_instruction_type == 5 {
-            return self.coefficients.constant[0] as f32;
+            let leakage =
+                self.coefficients.constant[0] as f32 / self.resistance * self.supplyvoltage;
+            // warn!("instructiontype: {:} op1: {:08x} op2: {:08x} prev_op1: {:08x} prev_op2: {:08x} -> {:1.3e} current: {:} {:}", current_instruction_type,
+            //     0,0,0,0, leakage, current.instruction.mnemonic().unwrap(), current.instruction.op_str().unwrap());
+            return leakage;
         }
 
-        let current0 = current.get(0).or(Some(&0)).unwrap();
-        let current1 = current.get(1).or(Some(&0)).unwrap();
-        let previous0 = previous.get(0).or(Some(&0)).unwrap();
-        let previous1 = previous.get(1).or(Some(&0)).unwrap();
+        let mut current0 = 0;
+        let mut current1 = 0;
+        let len = current.regvalues_before.len();
+        if len >= 2 {
+            current0 = current.regvalues_before[len - 1];
+            current1 = current.regvalues_before[len - 2];
+        } else if len > 0 {
+            current0 = current.regvalues_before[len - 1];
+        }
+
+        let mut previous0 = 0;
+        let mut previous1 = 0;
+        let len = previous.regvalues_before.len();
+        if len >= 2 {
+            previous0 = previous.regvalues_before[len - 1];
+            previous1 = previous.regvalues_before[len - 2];
+        } else if len > 0 {
+            previous0 = previous.regvalues_before[len - 1];
+        }
+
+        {
+            if !current.memory_after.is_empty() {
+                current1 = *current.memory_before.last().unwrap();
+            } else if !current.memory_before.is_empty() {
+                current1 = *current.memory_before.last().unwrap();
+            }
+            if !previous.memory_after.is_empty() {
+                previous1 = *previous.memory_before.last().unwrap();
+            } else if !previous.memory_before.is_empty() {
+                previous1 = *previous.memory_before.last().unwrap();
+            }
+        }
 
         let hw_op1 = current0.hamming();
         let hw_op2 = current1.hamming();
@@ -368,7 +410,7 @@ impl ElmoPowerLeakage {
                     * hd_op2 as f64;
         }
 
-        let leakage = self.coefficients.constant[current_instruction_type]
+        let mut leakage = self.coefficients.constant[current_instruction_type]
             + op1_data
             + op2_data
             + bitflip1_data
@@ -384,7 +426,82 @@ impl ElmoPowerLeakage {
             + hd_op1_subsequent_instruction_data
             + hd_op2_subsequent_instruction_data;
 
-        leakage as f32
+        // Add memory leakage
+        let memory_leakage = {
+            if !current.memory_after.is_empty() {
+                std::iter::once(&self.writebus)
+                    .chain(current.memory_after.iter())
+                    .zip(current.memory_after.iter())
+                    .map(|(before, after)| {
+                        self.coefficients.hd_operand1_previous_instruction[0]
+                            [current_instruction_type]
+                            * (before ^ after).hamming() as f64
+                    })
+                    .sum::<f64>()
+            } else {
+                std::iter::once(&self.readbus)
+                    .chain(current.memory_before.iter())
+                    .zip(current.memory_before.iter())
+                    .map(|(before, after)| {
+                        self.coefficients.hd_operand1_previous_instruction[0]
+                            [current_instruction_type]
+                            * (before ^ after).hamming() as f64
+                    })
+                    .sum()
+            }
+        };
+
+        leakage += memory_leakage;
+
+        let leakage = leakage as f32 / self.resistance * self.supplyvoltage;
+
+        debug!(
+            "{:} {:} instructiontype: {:} op1: {:08x} op2: {:08x} prev_op1: {:08x} prev_op2: {:08x} -> {:1.3e}
+    op1_data: {:1.3e}
+    op2_data: {:1.3e}
+    bitflip1_data: {:1.3e}
+    bitflip2_data: {:1.3e}
+    previous_instruction_data: {:1.3e}
+    subsequent_instruction_data: {:1.3e}
+    hw_op1_previous_instruction_data: {:1.3e}
+    hw_op2_previous_instruction_data: {:1.3e}
+    hd_op1_previous_instruction_data: {:1.3e}
+    hd_op2_previous_instruction_data: {:1.3e}
+    hw_op1_subsequent_instruction_data: {:1.3e}
+    hw_op2_subsequent_instruction_data: {:1.3e}
+    hd_op1_subsequent_instruction_data: {:1.3e}
+    hd_op2_subsequent_instruction_data: {:1.3e}
+    memory_leakage: {:1.3e}
+    readbus: {:?} writebus: {:?} {:?}",
+            current.instruction.mnemonic().unwrap(),
+            current.instruction.op_str().unwrap(),
+            current_instruction_type,
+            current0,
+            current1,
+            previous0,
+            previous1,
+            leakage,
+            op1_data,
+            op2_data,
+            bitflip1_data,
+            bitflip2_data,
+            previous_instruction_data,
+            subsequent_instruction_data,
+            hw_op1_previous_instruction_data,
+            hw_op2_previous_instruction_data,
+            hd_op1_previous_instruction_data,
+            hd_op2_previous_instruction_data,
+            hw_op1_subsequent_instruction_data,
+            hw_op2_subsequent_instruction_data,
+            hd_op1_subsequent_instruction_data,
+            hd_op2_subsequent_instruction_data,
+            memory_leakage,
+            self.readbus,
+            self.writebus,
+            current,
+        );
+
+        leakage
     }
 
     pub fn instruction_type(instruction: &OwnedInsn) -> usize {
@@ -397,7 +514,12 @@ impl ElmoPowerLeakage {
             id if id == ArmInsn::ARM_INS_CPS as u32 => 0,
             id if id == ArmInsn::ARM_INS_EOR as u32 => 0,
             id if id == ArmInsn::ARM_INS_MOV as u32 => 0,
+            id if id == ArmInsn::ARM_INS_MOVS as u32 => 0,
+            id if id == ArmInsn::ARM_INS_MOVT as u32 => 0,
+            id if id == ArmInsn::ARM_INS_MOVW as u32 => 0,
             id if id == ArmInsn::ARM_INS_ORR as u32 => 0,
+            id if id == ArmInsn::ARM_INS_HINT as u32 => 0,
+            id if id == ArmInsn::ARM_INS_NOP as u32 => 0,
 
             id if id == ArmInsn::ARM_INS_LSL as u32 => 1,
             id if id == ArmInsn::ARM_INS_LSR as u32 => 1,
@@ -423,16 +545,31 @@ impl LeakageModel for ElmoPowerLeakage {
         3
     }
 
-    fn calculate(&self, scadata: &[ScaData]) -> Leakage {
-        todo!();
-        // assert!(scadata.len() == 3);
-        // return self.calculate_powermodel(
-        //     ElmoPowerLeakage::instruction_type(scadata[0].instruction),
-        //     ElmoPowerLeakage::instruction_type(scadata[1].instruction),
-        //     ElmoPowerLeakage::instruction_type(scadata[2].instruction),
-        //     scadata[0].regvalues_before.as_ref(),
-        //     scadata[1].regvalues_before.as_ref(),
-        //     scadata[2].regvalues_before.as_ref(),
-        // );
+    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage {
+        assert!(scadata.len() == 3);
+        let leakage_value = self.calculate_powermodel(&scadata[0], &scadata[1], &scadata[2]);
+
+        let mut leakage = Leakage {
+            address: scadata[1].instruction.address(),
+            values: ArrayVec::new(),
+        };
+        leakage.values.push(leakage_value);
+
+        // Append further values for cycle accurate memory operations
+        for _ in 0..scadata[1].memory_before.len() {
+            leakage.values.push(leakage_value);
+        }
+
+        // Update memory busses
+        {
+            let current_data = &scadata[1];
+            if !current_data.memory_after.is_empty() {
+                self.writebus = *current_data.memory_after.last().unwrap();
+            } else if !current_data.memory_before.is_empty() {
+                self.readbus = *current_data.memory_before.last().unwrap();
+            }
+        }
+
+        leakage
     }
 }

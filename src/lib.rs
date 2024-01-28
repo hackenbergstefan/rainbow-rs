@@ -17,7 +17,7 @@ use capstone::{
     prelude::{BuildsCapstone, DetailsArchInsn},
     Capstone, OwnedInsn,
 };
-use log::{info, trace};
+use log::{debug, info, trace};
 use unicorn_engine::{
     unicorn_const::{Arch, HookType, MemType, Mode, Permission},
     RegisterARM, Unicorn,
@@ -52,6 +52,7 @@ pub struct ScaData<'a> {
 }
 
 pub struct Tracing<'a> {
+    id: u32,
     capturing: bool,
     register_values: ArrayVec<ScaData<'a>, 16>,
     trace: Vec<f32>,
@@ -123,6 +124,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                 hooks: Vec::new(),
                 leakage,
                 tracing: Tracing {
+                    id: 0,
                     register_values: ArrayVec::new(),
                     trace: Vec::new(),
                     instruction_trace: Vec::new(),
@@ -202,50 +204,50 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         // Execute hook if present
         for (hook_addr, hook_func) in &inner.hooks {
             if address == hook_addr & !1 {
-                info!("Execute hook at {:08x}", address);
+                debug!("Execute hook at {:08x}", address);
                 if !hook_func(self) {
                     self.emu_stop().unwrap();
                 }
                 return;
             }
         }
-        // Log current instruction
-        if log::log_enabled!(log::Level::Info) {
-            let (instruction, _) = inner.elfinfo.get_instruction(&address).unwrap();
-            info!(
-                "Executing {:08x}: {:} {:} [{:?}] operands: {:?}\n\t read: {:?} write: {:?} ({:?})",
-                instruction.address(),
-                instruction.mnemonic().unwrap(),
-                instruction.op_str().unwrap(),
-                instruction.id(),
-                inner
-                    .capstone
-                    .insn_detail(instruction)
-                    .unwrap()
-                    .arch_detail()
-                    .arm()
-                    .unwrap()
-                    .operands()
-                    .collect::<Vec<ArmOperand>>(),
-                inner.capstone.insn_detail(instruction).unwrap().regs_read(),
-                inner
-                    .capstone
-                    .insn_detail(instruction)
-                    .unwrap()
-                    .regs_write(),
-                inner
-                    .capstone
-                    .insn_detail(instruction)
-                    .unwrap()
-                    .groups()
-                    .iter()
-                    .map(|g| inner.capstone.group_name(*g).unwrap())
-                    .collect::<String>()
-            );
-        }
-
         // Add tracepoint if capturing
         if inner.tracing.capturing {
+            // Log current instruction
+            if log::log_enabled!(log::Level::Info) {
+                let (instruction, _) = inner.elfinfo.get_instruction(&address).unwrap();
+                debug!(
+                    "Executing {:08x}: {:} {:} [{:?}] operands: {:?}\n\t read: {:?} write: {:?} ({:?})",
+                    instruction.address(),
+                    instruction.mnemonic().unwrap(),
+                    instruction.op_str().unwrap(),
+                    instruction.id(),
+                    inner
+                        .capstone
+                        .insn_detail(instruction)
+                        .unwrap()
+                        .arch_detail()
+                        .arm()
+                        .unwrap()
+                        .operands()
+                        .collect::<Vec<ArmOperand>>(),
+                    inner.capstone.insn_detail(instruction).unwrap().regs_read(),
+                    inner
+                        .capstone
+                        .insn_detail(instruction)
+                        .unwrap()
+                        .regs_write(),
+                    inner
+                        .capstone
+                        .insn_detail(instruction)
+                        .unwrap()
+                        .groups()
+                        .iter()
+                        .map(|g| inner.capstone.group_name(*g).unwrap())
+                        .collect::<String>()
+                );
+            }
+
             // Extend last ScaData by updated register values
             if let Some(scadata) = inner.tracing.register_values.last() {
                 self.get_data_mut()
@@ -292,12 +294,14 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
 
     fn hook_memory(&mut self, memtype: MemType, address: u64, size: usize, newvalue: i64) -> bool {
         if self.get_data().tracing.capturing {
+            // TODO: Model buswidth?
+            let size = size.min(4);
             let oldvalue = {
                 let mut oldvalue = [0; 8];
                 self.mem_read(address, &mut oldvalue[..size]).unwrap();
                 u64::from_le_bytes(oldvalue)
             };
-            info!("hook_memory {address:08x} {size} {oldvalue:08x} -> {newvalue:08x}");
+            debug!("hook_memory {address:08x} {size} {oldvalue:08x} -> {newvalue:08x}");
 
             // Update last scadata
             let inner_mut = self.get_data_mut();
@@ -334,7 +338,8 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
     fn process_inter_thread_communication(&mut self) -> bool {
         let inner = self.get_data_mut();
         match inner.itc.recv() {
-            Ok(ITCRequest::VictimData(data)) => {
+            Ok(ITCRequest::VictimData(id, data)) => {
+                inner.tracing.id = id;
                 inner.victim_com.write(data);
                 true
             }
@@ -439,7 +444,10 @@ pub fn hook_trigger_low<L: LeakageModel, C: Communication>(
     inner.tracing.stop_capturing();
     inner
         .itc
-        .send(ITCResponse::Trace(inner.tracing.trace.clone()))
+        .send(ITCResponse::Trace(
+            inner.tracing.id,
+            inner.tracing.trace.clone(),
+        ))
         .unwrap();
 
     true

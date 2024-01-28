@@ -70,9 +70,13 @@ pub enum Command {
     /// Request to receive the last captured trace.
     GetTrace(usize),
     /// Answer to `GetTrace`.
-    Trace(Vec<f32>),
+    Trace(u32, Vec<f32>),
     /// Data to be passed to "victim".
-    VictimData(Vec<u8>),
+    VictimData(u32, Vec<u8>),
+    /// Get trace in binary format
+    GetTraceBinary,
+    /// Terminate the program gracefully
+    Terminate,
 }
 
 /// Establish communication with rainbow-rs.
@@ -88,11 +92,11 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
     for line in stream_reader.lines() {
         let command: Command = serde_json::from_str(&line?)?;
         match command {
-            Command::VictimData(data) => {
-                itc.send(ITCRequest::VictimData(data))?;
+            Command::VictimData(id, data) => {
+                itc.send(ITCRequest::VictimData(id, data))?;
             }
             Command::GetTrace(samples) => match itc.recv()? {
-                ITCResponse::Trace(mut trace) => {
+                ITCResponse::Trace(id, mut trace) => {
                     while samples > 0 && trace.len() > samples {
                         trace.pop();
                     }
@@ -101,11 +105,24 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
                     }
 
                     stream_writer
-                        .write_all(serde_json::to_string(&Command::Trace(trace))?.as_bytes())?;
+                        .write_all(serde_json::to_string(&Command::Trace(id, trace))?.as_bytes())?;
                     stream_writer.write_all(b"\n")?;
                     stream_writer.flush()?;
                 }
             },
+            Command::GetTraceBinary => match itc.recv()? {
+                ITCResponse::Trace(id, trace) => {
+                    stream_writer.write_all(&id.to_be_bytes())?;
+                    for sample in trace {
+                        stream_writer.write_all(&sample.to_be_bytes())?;
+                    }
+                    stream_writer.flush()?;
+                }
+            },
+            Command::Terminate => {
+                itc.send(ITCRequest::Terminate)?;
+                break;
+            }
             _ => todo!(),
         }
     }
@@ -128,7 +145,7 @@ fn main() -> Result<()> {
 
     let (server, client) = create_inter_thread_channels();
     let elfinfo = ElfInfo::new_from_elffile(&buf)?;
-    let coeffs = args.coefficientfile.unwrap();
+    let coeffs: String = args.coefficientfile.unwrap_or(String::from("coeffs.txt"));
     thread::scope(|scope| -> Result<()> {
         let threads = Vec::from_iter((0..args.threads).map(|_| {
             let s = scope.spawn(|| -> Result<()> {

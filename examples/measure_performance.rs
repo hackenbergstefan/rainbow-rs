@@ -34,6 +34,7 @@ fn measure(prog: &str, runs: usize, threads: usize) -> (u128, usize) {
         .arg("--bin=rainbow-rs")
         .arg("--quiet")
         .arg("--")
+        .arg("--leakage=elmo")
         .arg(format!("--threads={:}", threads))
         .arg(prog)
         .spawn()
