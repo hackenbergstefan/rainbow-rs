@@ -43,15 +43,15 @@ impl HammingWeight for u128 {
 }
 
 #[derive(Debug)]
-pub struct Leakage {
-    pub address: u64,
+pub struct Leakage<'a> {
+    pub instruction: &'a OwnedInsn<'static>,
     pub values: ArrayVec<f32, 16>,
 }
 
 /// Generic Leakage Model
 pub trait LeakageModel {
     /// Calculate the value of the trace point at given instruction
-    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage;
+    fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a>;
 
     /// Number of cycles that are incoporated into the leakage calculation
     fn cycles_for_calc(&self) -> usize;
@@ -79,7 +79,7 @@ impl LeakageModel for HammingWeightLeakage {
         1
     }
 
-    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage {
+    fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
         debug!("Calculate HammingWeightLeakage for {:?}", scadata);
 
         assert!(scadata.len() == 1);
@@ -117,7 +117,7 @@ impl LeakageModel for HammingWeightLeakage {
         }
 
         let mut leakage = Leakage {
-            address: scadata.instruction.address(),
+            instruction: scadata.instruction,
             values: ArrayVec::new(),
         };
         leakage.values.push(register_leakage);
@@ -147,7 +147,7 @@ impl LeakageModel for HammingDistanceLeakage {
         1
     }
 
-    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage {
+    fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
         assert!(scadata.len() == 1);
         let scadata = &scadata[0];
         let mut register_leakage = {
@@ -169,7 +169,7 @@ impl LeakageModel for HammingDistanceLeakage {
             .sum::<u32>() as f32;
 
         let mut leakage = Leakage {
-            address: scadata.instruction.address(),
+            instruction: scadata.instruction,
             values: ArrayVec::new(),
         };
         leakage.values.push(register_leakage);
@@ -545,12 +545,12 @@ impl LeakageModel for ElmoPowerLeakage {
         3
     }
 
-    fn calculate(&mut self, scadata: &[ScaData]) -> Leakage {
+    fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
         assert!(scadata.len() == 3);
         let leakage_value = self.calculate_powermodel(&scadata[0], &scadata[1], &scadata[2]);
 
         let mut leakage = Leakage {
-            address: scadata[1].instruction.address(),
+            instruction: scadata[1].instruction,
             values: ArrayVec::new(),
         };
         leakage.values.push(leakage_value);

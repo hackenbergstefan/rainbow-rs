@@ -13,6 +13,8 @@ pub enum ITCRequest {
     VictimData(u32, Vec<u8>),
     /// Stop simulation.
     Terminate,
+    /// Return instruction trace
+    GetInstructionTrace,
 }
 
 /// Enum holding inter thread responses
@@ -20,6 +22,8 @@ pub enum ITCRequest {
 pub enum ITCResponse {
     /// Answer to `GetTrace`.
     Trace(u32, Vec<f32>),
+    /// Answer to `GetInstructionTrace`.
+    InstructionTrace(Vec<String>),
 }
 
 #[derive(Clone)]

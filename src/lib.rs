@@ -56,7 +56,7 @@ pub struct Tracing<'a> {
     capturing: bool,
     register_values: ArrayVec<ScaData<'a>, 16>,
     trace: Vec<f32>,
-    instruction_trace: Vec<u32>,
+    instruction_trace: Vec<&'a OwnedInsn<'static>>,
 }
 
 impl<'a> Tracing<'a> {
@@ -99,6 +99,8 @@ pub trait ThumbTraceEmulatorTrait<'a, L: LeakageModel, C: Communication>: Sized 
     fn get_trace(&self) -> &Vec<f32>;
 
     fn process_inter_thread_communication(&mut self) -> bool;
+
+    fn instruction_trace(&self) -> Vec<String>;
 }
 
 impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
@@ -270,7 +272,7 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
                     inner_mut
                         .tracing
                         .instruction_trace
-                        .push(leakage.address as u32);
+                        .push(leakage.instruction);
                 }
                 inner_mut.tracing.register_values.pop_at(0);
             }
@@ -333,14 +335,29 @@ impl<'a, L: LeakageModel, C: Communication> ThumbTraceEmulatorTrait<'a, L, C>
         &self.get_data().tracing.trace
     }
 
+    fn instruction_trace(&self) -> Vec<String> {
+        let mut x = Vec::new();
+        for (idx, instruction) in self.get_data().tracing.instruction_trace.iter().enumerate() {
+            x.push(format!("{:} {:?}", idx, instruction.to_string()));
+        }
+        x
+    }
+
     /// Blocking function to process requests from main thread.
     /// Shall be called in an idle-loop of victim execution. E.g. `SimpleSerial::getch`.
     fn process_inter_thread_communication(&mut self) -> bool {
-        let inner = self.get_data_mut();
-        match inner.itc.recv() {
+        match self.get_data().itc.recv() {
             Ok(ITCRequest::VictimData(id, data)) => {
+                let inner = self.get_data_mut();
                 inner.tracing.id = id;
                 inner.victim_com.write(data);
+                true
+            }
+            Ok(ITCRequest::GetInstructionTrace) => {
+                self.get_data()
+                    .itc
+                    .send(ITCResponse::InstructionTrace(self.instruction_trace()))
+                    .unwrap();
                 true
             }
             Ok(ITCRequest::Terminate) => false,

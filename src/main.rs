@@ -75,6 +75,10 @@ pub enum Command {
     VictimData(u32, Vec<u8>),
     /// Get trace in binary format
     GetTraceBinary,
+    /// Get last trace of instructions
+    GetInstructionTrace,
+    /// Answer to `GetInstructionTrace`
+    InstructionTrace(Vec<String>),
     /// Terminate the program gracefully
     Terminate,
 }
@@ -95,8 +99,8 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
             Command::VictimData(id, data) => {
                 itc.send(ITCRequest::VictimData(id, data))?;
             }
-            Command::GetTrace(samples) => match itc.recv()? {
-                ITCResponse::Trace(id, mut trace) => {
+            Command::GetTrace(samples) => {
+                if let ITCResponse::Trace(id, mut trace) = itc.recv()? {
                     while samples > 0 && trace.len() > samples {
                         trace.pop();
                     }
@@ -109,19 +113,29 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
                     stream_writer.write_all(b"\n")?;
                     stream_writer.flush()?;
                 }
-            },
-            Command::GetTraceBinary => match itc.recv()? {
-                ITCResponse::Trace(id, trace) => {
+            }
+            Command::GetTraceBinary => {
+                if let ITCResponse::Trace(id, trace) = itc.recv()? {
                     stream_writer.write_all(&id.to_be_bytes())?;
                     for sample in trace {
                         stream_writer.write_all(&sample.to_be_bytes())?;
                     }
                     stream_writer.flush()?;
                 }
-            },
+            }
             Command::Terminate => {
                 itc.send(ITCRequest::Terminate)?;
                 break;
+            }
+            Command::GetInstructionTrace => {
+                itc.send(ITCRequest::GetInstructionTrace)?;
+                if let ITCResponse::InstructionTrace(trace) = itc.recv()? {
+                    stream_writer.write_all(
+                        serde_json::to_string(&Command::InstructionTrace(trace))?.as_bytes(),
+                    )?;
+                    stream_writer.write_all(b"\n")?;
+                    stream_writer.flush()?;
+                }
             }
             _ => todo!(),
         }
