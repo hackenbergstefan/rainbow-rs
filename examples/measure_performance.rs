@@ -22,9 +22,9 @@ pub enum SocketCommand {
     /// Request to receive the last captured trace.
     GetTrace(usize),
     /// Answer to `GetTrace`.
-    Trace(Vec<f32>),
+    Trace(u32, Vec<f32>),
     /// Data to be passed to "victim".
-    VictimData(Vec<u8>),
+    VictimData(u32, Vec<u8>),
 }
 
 fn measure(prog: &str, runs: usize, threads: usize) -> (u128, usize) {
@@ -48,9 +48,11 @@ fn measure(prog: &str, runs: usize, threads: usize) -> (u128, usize) {
         stream.set_nodelay(true).unwrap();
         let mut writer = BufWriter::new(&stream);
         let mut reader = BufReader::new(&stream);
-        for _ in 0..runs {
+        for i in 0..runs {
             writer
-                .write_all(format!("{{ \"VictimData\": {:?} }}\n", SIMPLESERIAL_DATA).as_bytes())
+                .write_all(
+                    format!("{{ \"VictimData\": [{:}, {:?}] }}\n", i, SIMPLESERIAL_DATA).as_bytes(),
+                )
                 .unwrap();
             writer.flush().unwrap();
         }
@@ -62,7 +64,7 @@ fn measure(prog: &str, runs: usize, threads: usize) -> (u128, usize) {
             writer.flush().unwrap();
             let mut buf = String::new();
             reader.read_line(&mut buf).unwrap();
-            if let SocketCommand::Trace(trace) = serde_json::from_str(&buf).unwrap() {
+            if let SocketCommand::Trace(_, trace) = serde_json::from_str(&buf).unwrap() {
                 samples_read += trace.len();
             }
         }
