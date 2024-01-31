@@ -311,12 +311,14 @@ impl ElmoPowerLeakage {
 
         {
             if !current.memory_after.is_empty() {
-                current1 = *current.memory_before.last().unwrap();
+                current0 = *current.memory_before.last().unwrap();
+                current1 = *current.memory_after.last().unwrap();
             } else if !current.memory_before.is_empty() {
                 current1 = *current.memory_before.last().unwrap();
             }
             if !previous.memory_after.is_empty() {
-                previous1 = *previous.memory_before.last().unwrap();
+                previous0 = *previous.memory_before.last().unwrap();
+                previous1 = *previous.memory_after.last().unwrap();
             } else if !previous.memory_before.is_empty() {
                 previous1 = *previous.memory_before.last().unwrap();
             }
@@ -331,6 +333,8 @@ impl ElmoPowerLeakage {
         let bitflips_op1 = current0 ^ previous0;
         let bitflips_op2 = current1 ^ previous1;
 
+        let hd_op = (current0 ^ current1).hamming();
+
         // Calculate leakage for each bit
         let op1_data: f64 = (0..32)
             .map(|i| {
@@ -344,6 +348,12 @@ impl ElmoPowerLeakage {
                     * self.coefficients.operand2[i][current_instruction_type]
             })
             .sum();
+        let op_data: f64 = (0..32)
+            .map(|i| {
+                ((hd_op >> i) & 1) as f64 * self.coefficients.bitflip2[i][current_instruction_type]
+            })
+            .sum();
+        let op_data = 20.0 * op_data;
 
         let bitflip1_data: f64 = (0..32)
             .map(|i| {
@@ -411,6 +421,7 @@ impl ElmoPowerLeakage {
         }
 
         let mut leakage = self.coefficients.constant[current_instruction_type]
+            + op_data
             + op1_data
             + op2_data
             + bitflip1_data
@@ -455,7 +466,7 @@ impl ElmoPowerLeakage {
 
         let leakage = leakage as f32 / self.resistance * self.supplyvoltage;
 
-        debug!(
+        info!(
             "{:} {:} instructiontype: {:} op1: {:08x} op2: {:08x} prev_op1: {:08x} prev_op2: {:08x} -> {:1.3e}
     op1_data: {:1.3e}
     op2_data: {:1.3e}
