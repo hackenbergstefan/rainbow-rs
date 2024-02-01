@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2023 Stefan Hackenberg <mail@stefan-hackenberg.de>
+#
+# SPDX-License-Identifier: MIT
+
+on:
+  release:
+    types: [created]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Format
+      run: cargo fmt --check
+    - name: Clippy
+      run: cargo clippy -- --deny warnings
+    - name: Build
+      run: cargo build --release
+    - name: Package artifact
+      run: |
+        target=$(rustc -vV | sed -n 's|host: ||p')
+        cp target/release/rainbow-rs .
+        tar -czf ${target}.tar.gz rainbow-rs
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          LICENSES/MIT.txt
+          *.tar.gz
