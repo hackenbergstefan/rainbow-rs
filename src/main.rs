@@ -18,7 +18,9 @@ use serde::{Deserialize, Serialize};
 use rainbow_rs::{
     asmutils::ElfInfo,
     itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
-    leakage::{ElmoPowerLeakage, HammingDistanceLeakage, HammingWeightLeakage},
+    leakage::{
+        ElmoPowerLeakage, HammingDistanceLeakage, HammingWeightLeakage, PessimisticHammingLeakage,
+    },
     new_simpleserialsocket_stm32f4, ThumbTraceEmulatorTrait,
 };
 
@@ -27,6 +29,7 @@ enum LeakageModel {
     HammingWeight,
     HammingDistance,
     Elmo,
+    PessimisticHammingLeakage,
 }
 
 #[derive(Parser, Debug)]
@@ -185,6 +188,14 @@ fn main() -> Result<()> {
                         let mut emu = new_simpleserialsocket_stm32f4(
                             &elfinfo,
                             ElmoPowerLeakage::new(&coeffs),
+                            client.clone(),
+                        )?;
+                        emu.start()?;
+                    }
+                    LeakageModel::PessimisticHammingLeakage => {
+                        let mut emu = new_simpleserialsocket_stm32f4(
+                            &elfinfo,
+                            PessimisticHammingLeakage::new(),
                             client.clone(),
                         )?;
                         emu.start()?;

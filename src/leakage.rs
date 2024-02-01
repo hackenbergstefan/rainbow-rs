@@ -5,6 +5,7 @@
 use crate::ScaData;
 use arrayvec::ArrayVec;
 use capstone::{arch::arm::ArmInsn, OwnedInsn};
+use itertools::{iproduct, Itertools};
 use log::{debug, info};
 
 pub trait HammingWeight {
@@ -582,5 +583,111 @@ impl LeakageModel for ElmoPowerLeakage {
         }
 
         leakage
+    }
+}
+
+pub struct PessimisticHammingLeakage {
+    busvalue: u64,
+}
+
+impl PessimisticHammingLeakage {
+    pub fn new() -> Self {
+        PessimisticHammingLeakage { busvalue: 0 }
+    }
+}
+
+impl LeakageModel for PessimisticHammingLeakage {
+    #[inline]
+    fn cycles_for_calc(&self) -> usize {
+        2
+    }
+
+    fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
+        assert!(scadata.len() == 2);
+
+        let mut leakage = 0;
+        let current_data = &scadata[1];
+        let previous_data = &scadata[0];
+
+        // Leak hamming weight of all operands
+        {
+            leakage += current_data
+                .regvalues_before
+                .iter()
+                .map(|x| x.hamming())
+                .sum::<u32>();
+            leakage += current_data
+                .regvalues_after
+                .iter()
+                .map(|x| x.hamming())
+                .sum::<u32>();
+        }
+
+        // Leak hamming distance of all operands
+        {
+            leakage += current_data
+                .regvalues_before
+                .iter()
+                .combinations(2)
+                .map(|x| (x[0] ^ x[1]).hamming())
+                .sum::<u32>();
+            leakage += current_data
+                .regvalues_after
+                .iter()
+                .combinations(2)
+                .map(|x| (x[0] ^ x[1]).hamming())
+                .sum::<u32>();
+        }
+
+        // Leak hamming distance of before and after
+        {
+            leakage += current_data
+                .regvalues_before
+                .iter()
+                .zip(current_data.regvalues_after.iter())
+                .map(|(x, y)| (x ^ y).hamming())
+                .sum::<u32>();
+        }
+
+        // Leak hamming distance from previous to current
+        {
+            leakage += iproduct!(
+                current_data.regvalues_before.iter(),
+                previous_data.regvalues_after.iter()
+            )
+            .map(|(x, y)| (x ^ y).hamming())
+            .sum::<u32>();
+        }
+
+        // Leak memory values
+        {
+            leakage += iproduct!(
+                current_data.memory_before.iter(),
+                current_data.memory_after.iter()
+            )
+            .map(|(x, y)| (x ^ y).hamming())
+            .sum::<u32>();
+
+            if !current_data.memory_before.is_empty() {
+                leakage += iproduct!(
+                    std::iter::once(self.busvalue),
+                    current_data.memory_before.iter()
+                )
+                .map(|(x, y)| (x ^ y).hamming())
+                .sum::<u32>();
+            }
+            if !current_data.memory_after.is_empty() {
+                self.busvalue = *current_data.memory_after.last().unwrap();
+            } else if !current_data.memory_before.is_empty() {
+                self.busvalue = *current_data.memory_before.last().unwrap();
+            }
+        }
+
+        let mut values = ArrayVec::new();
+        values.push(leakage as f32);
+        Leakage {
+            instruction: current_data.instruction,
+            values: values,
+        }
     }
 }
