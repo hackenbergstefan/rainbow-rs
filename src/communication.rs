@@ -9,7 +9,6 @@ use std::collections::VecDeque;
 use anyhow::Result;
 use unicorn_engine::{RegisterARM, Unicorn};
 
-use crate::leakage::LeakageModel;
 use crate::{hook_force_return, ThumbTraceEmulator, ThumbTraceEmulatorTrait};
 
 pub trait Communication {
@@ -35,24 +34,20 @@ impl SimpleSerial {
         }
     }
 
-    pub fn install_hooks<'a: 'b, 'b, L: LeakageModel>(
-        emu: &mut Unicorn<'a, ThumbTraceEmulator<'b, L, SimpleSerial>>,
+    pub fn install_hooks<'a: 'b, 'b>(
+        emu: &mut Unicorn<'a, ThumbTraceEmulator<'b, SimpleSerial>>,
     ) -> Result<()> {
         emu.register_hook("init_uart", Self::hook_init_uart)?;
         emu.register_hook("getch", Self::hook_getch)?;
         Ok(())
     }
 
-    pub fn hook_init_uart<L: LeakageModel>(
-        emu: &mut Unicorn<ThumbTraceEmulator<L, SimpleSerial>>,
-    ) -> bool {
+    pub fn hook_init_uart(emu: &mut Unicorn<ThumbTraceEmulator<SimpleSerial>>) -> bool {
         hook_force_return(emu);
         true
     }
 
-    pub fn hook_getch<L: LeakageModel>(
-        emu: &mut Unicorn<ThumbTraceEmulator<L, SimpleSerial>>,
-    ) -> bool {
+    pub fn hook_getch(emu: &mut Unicorn<ThumbTraceEmulator<SimpleSerial>>) -> bool {
         while emu.get_data().victim_com.data.is_empty() {
             if !emu.process_inter_thread_communication() {
                 return false;

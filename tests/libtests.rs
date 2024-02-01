@@ -61,7 +61,7 @@ impl LeakageModel for NullLeakage {
     }
 }
 
-fn generate_leakage<L: LeakageModel>(leakage: L, segment: Segment) -> Vec<f32> {
+fn generate_leakage(leakage: Box<dyn LeakageModel>, segment: Segment) -> Vec<f32> {
     let (_, channel_emu) = create_inter_thread_channels();
     let elfinfo = ElfInfo::new_from_binary(vec![segment]).unwrap();
     let mut emu = ThumbTraceEmulator::new(
@@ -101,7 +101,7 @@ fn test_hamming_weight_leakage() {
     // Test basic hamming weight changes
     assert_eq!(
         &generate_leakage(
-            HammingWeightLeakage::new(),
+            Box::new(HammingWeightLeakage::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -123,7 +123,7 @@ fn test_hamming_weight_leakage() {
 fn test_hamming_weight_leakage_memory() {
     assert_eq!(
         &generate_leakage(
-            HammingWeightLeakage::new(),
+            Box::new(HammingWeightLeakage::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -143,7 +143,7 @@ fn test_hamming_weight_leakage_memory() {
 
     assert_eq!(
         &generate_leakage(
-            HammingWeightLeakage::new(),
+            Box::new(HammingWeightLeakage::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -169,7 +169,7 @@ fn test_hamming_distance_leakage() {
     // Test basic hamming weight changes
     assert_eq!(
         &generate_leakage(
-            HammingDistanceLeakage::new(),
+            Box::new(HammingDistanceLeakage::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -191,7 +191,7 @@ fn test_hamming_distance_leakage() {
 fn test_hamming_distance_leakage_memory() {
     assert_eq!(
         &generate_leakage(
-            HammingWeightLeakage::new(),
+            Box::new(HammingWeightLeakage::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -211,7 +211,7 @@ fn test_hamming_distance_leakage_memory() {
 
     assert_eq!(
         &generate_leakage(
-            HammingDistanceLeakage::new(),
+            Box::new(HammingDistanceLeakage::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -249,7 +249,7 @@ fn test_victim_communication() {
     .unwrap();
     let mut emu = ThumbTraceEmulator::new(
         &elfinfo,
-        HammingWeightLeakage::new(),
+        Box::new(HammingWeightLeakage::new()),
         Reflector::new(channel_emu.clone()),
         channel_emu,
     )
@@ -292,7 +292,7 @@ fn test_terminate() {
     .unwrap();
     let mut emu = ThumbTraceEmulator::new(
         &elfinfo,
-        HammingWeightLeakage::new(),
+        Box::new(HammingWeightLeakage::new()),
         Reflector::new(channel_emu.clone()),
         channel_emu,
     )

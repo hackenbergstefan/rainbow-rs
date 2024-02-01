@@ -166,41 +166,19 @@ fn main() -> Result<()> {
     thread::scope(|scope| -> Result<()> {
         let threads = Vec::from_iter((0..args.threads).map(|_| {
             let s = scope.spawn(|| -> Result<()> {
-                match args.leakage {
-                    LeakageModel::HammingWeight => {
-                        let mut emu = new_simpleserialsocket_stm32f4(
-                            &elfinfo,
-                            HammingWeightLeakage::new(),
-                            client.clone(),
-                        )?;
-                        emu.start()?;
-                    }
-
-                    LeakageModel::HammingDistance => {
-                        let mut emu = new_simpleserialsocket_stm32f4(
-                            &elfinfo,
-                            HammingDistanceLeakage::new(),
-                            client.clone(),
-                        )?;
-                        emu.start()?;
-                    }
-                    LeakageModel::Elmo => {
-                        let mut emu = new_simpleserialsocket_stm32f4(
-                            &elfinfo,
-                            ElmoPowerLeakage::new(&coeffs),
-                            client.clone(),
-                        )?;
-                        emu.start()?;
-                    }
-                    LeakageModel::PessimisticHammingLeakage => {
-                        let mut emu = new_simpleserialsocket_stm32f4(
-                            &elfinfo,
-                            PessimisticHammingLeakage::new(),
-                            client.clone(),
-                        )?;
-                        emu.start()?;
-                    }
-                };
+                let mut emu = new_simpleserialsocket_stm32f4(
+                    &elfinfo,
+                    match args.leakage {
+                        LeakageModel::HammingWeight => Box::new(HammingWeightLeakage::new()),
+                        LeakageModel::HammingDistance => Box::new(HammingDistanceLeakage::new()),
+                        LeakageModel::Elmo => Box::new(ElmoPowerLeakage::new(&coeffs)),
+                        LeakageModel::PessimisticHammingLeakage => {
+                            Box::new(PessimisticHammingLeakage::new())
+                        }
+                    },
+                    client.clone(),
+                )?;
+                emu.start()?;
                 Ok(())
             });
             s
