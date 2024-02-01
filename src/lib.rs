@@ -43,12 +43,12 @@ pub struct ThumbTraceEmulator<'a, L: LeakageModel, C: Communication> {
 
 #[derive(Debug)]
 pub struct ScaData<'a> {
-    instruction: &'a OwnedInsn<'static>,
-    registers: &'a Vec<ArmOperand>,
-    regvalues_before: ArrayVec<u64, 8>,
-    regvalues_after: ArrayVec<u64, 8>,
-    memory_before: ArrayVec<u64, 8>,
-    memory_after: ArrayVec<u64, 8>,
+    pub instruction: &'a OwnedInsn<'static>,
+    pub registers: &'a Vec<ArmOperand>,
+    pub regvalues_before: ArrayVec<u64, 8>,
+    pub regvalues_after: ArrayVec<u64, 8>,
+    pub memory_before: ArrayVec<u64, 8>,
+    pub memory_after: ArrayVec<u64, 8>,
 }
 
 pub struct Tracing<'a> {

@@ -586,13 +586,14 @@ impl LeakageModel for ElmoPowerLeakage {
     }
 }
 
+#[derive(Default)]
 pub struct PessimisticHammingLeakage {
     busvalue: u64,
 }
 
 impl PessimisticHammingLeakage {
     pub fn new() -> Self {
-        PessimisticHammingLeakage { busvalue: 0 }
+        Self::default()
     }
 }
 
@@ -687,7 +688,7 @@ impl LeakageModel for PessimisticHammingLeakage {
         values.push(leakage as f32);
         Leakage {
             instruction: current_data.instruction,
-            values: values,
+            values,
         }
     }
 }

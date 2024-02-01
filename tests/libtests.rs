@@ -3,7 +3,6 @@
 // SPDX-License-Identifier: MIT
 
 use arrayvec::ArrayVec;
-use capstone::{arch::arm::ArmInsnDetail, Insn};
 use rainbow_rs::{
     asmutils::{ElfInfo, Segment},
     communication::Communication,
@@ -33,6 +32,7 @@ impl Communication for Reflector {
     fn write(&mut self, data: Vec<u8>) {
         self.channel
             .send(ITCResponse::Trace(
+                0,
                 data.into_iter().map(|x| x as f32).collect(),
             ))
             .unwrap();
@@ -49,9 +49,9 @@ impl NullLeakage {
 }
 
 impl LeakageModel for NullLeakage {
-    fn calculate(&mut self, _scadata: &[ScaData]) -> Leakage {
+    fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
         Leakage {
-            address: 0,
+            instruction: scadata[0].instruction,
             values: ArrayVec::new(),
         }
     }
@@ -264,7 +264,7 @@ fn test_victim_communication() {
     });
 
     channel_host
-        .send(ITCRequest::VictimData(vec![1, 2, 3, 4]))
+        .send(ITCRequest::VictimData(0, vec![1, 2, 3, 4]))
         .unwrap();
 
     emu.set_pc(0x1000_0001).unwrap();
@@ -272,7 +272,7 @@ fn test_victim_communication() {
 
     assert!(matches!(
         channel_host.recv().unwrap(),
-        ITCResponse::Trace(v)
+        ITCResponse::Trace(0, v)
         if v == vec![1.0, 2.0, 3.0, 4.0]
     ))
 }
