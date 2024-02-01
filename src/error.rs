@@ -2,39 +2,40 @@
 //
 // SPDX-License-Identifier: MIT
 
-use std::{error::Error, fmt};
+use std::{error::Error, fmt::Display};
 
 use unicorn_engine::unicorn_const::uc_error;
 
 #[derive(Debug)]
-pub enum TraceEmulatorError {
-    UcErr(uc_error),
-    ElfParseError(elf::ParseError),
-    IoError(std::io::Error),
-    // OtherError,
-}
+pub struct UcError(uc_error);
 
-impl fmt::Display for TraceEmulatorError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?}", self)
+impl Display for UcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "UcError: {:?}", self.0)
     }
 }
 
-impl From<uc_error> for TraceEmulatorError {
-    fn from(e: uc_error) -> Self {
-        Self::UcErr(e)
-    }
-}
-impl From<elf::ParseError> for TraceEmulatorError {
-    fn from(e: elf::ParseError) -> Self {
-        Self::ElfParseError(e)
+impl Error for UcError {}
+
+impl UcError {
+    pub fn new(e: uc_error) -> Self {
+        Self(e)
     }
 }
 
-impl From<std::io::Error> for TraceEmulatorError {
-    fn from(e: std::io::Error) -> Self {
-        Self::IoError(e)
+#[derive(Debug)]
+pub struct CapstoneError(capstone::Error);
+
+impl Display for CapstoneError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "CapstoneError: {:?}", self.0)
     }
 }
 
-impl Error for TraceEmulatorError {}
+impl Error for CapstoneError {}
+
+impl CapstoneError {
+    pub fn new(e: capstone::Error) -> Self {
+        Self(e)
+    }
+}

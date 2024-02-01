@@ -1,3 +1,0 @@
-// SPDX-FileCopyrightText: 2023 Stefan Hackenberg <mail@stefan-hackenberg.de>
-//
-// SPDX-License-Identifier: MIT

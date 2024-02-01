@@ -10,14 +10,20 @@ use crossbeam_channel::{Receiver, Sender};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ITCRequest {
     /// Data to be passed to "victim".
-    VictimData(Vec<u8>),
+    VictimData(u32, Vec<u8>),
+    /// Stop simulation.
+    Terminate,
+    /// Return instruction trace
+    GetInstructionTrace,
 }
 
 /// Enum holding inter thread responses
 #[derive(Clone, Debug, PartialEq)]
 pub enum ITCResponse {
     /// Answer to `GetTrace`.
-    Trace(Vec<f32>),
+    Trace(u32, Vec<f32>),
+    /// Answer to `GetInstructionTrace`.
+    InstructionTrace(Vec<String>),
 }
 
 #[derive(Clone)]
@@ -27,8 +33,8 @@ pub struct BiChannel<Req, Resp> {
 }
 
 impl<Req, Resp> BiChannel<Req, Resp> {
-    pub fn send(&self, data: Req) {
-        self.sender.send(data).unwrap();
+    pub fn send(&self, data: Req) -> Result<(), crossbeam_channel::SendError<Req>> {
+        self.sender.send(data)
     }
 
     pub fn recv(&self) -> Result<Resp, crossbeam_channel::RecvError> {
