@@ -8,7 +8,11 @@ on:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
     - uses: actions/checkout@v3
@@ -19,13 +23,20 @@ jobs:
     - name: Build
       run: cargo build --release
     - name: Package artifact
+      shell: bash
       run: |
         target=$(rustc -vV | sed -n 's|host: ||p')
-        cp target/release/rainbow-rs .
-        tar -czf ${target}.tar.gz rainbow-rs
+        if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+          cp target/release/rainbow-rs.exe .
+          7z a rainbow-rs-${target}.zip rainbow-rs.exe
+        else
+          cp target/release/rainbow-rs .
+          tar -czf rainbow-rs-${target}.tar.gz rainbow-rs
+        fi
     - name: Release
       uses: softprops/action-gh-release@v1
       with:
         files: |
           LICENSES/MIT.txt
           *.tar.gz
+          *.zip
