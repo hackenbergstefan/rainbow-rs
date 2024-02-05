@@ -72,16 +72,16 @@ fn file_exists(s: &str) -> Result<String, String> {
 pub enum Command {
     /// Request to receive the last captured trace.
     GetTrace(usize),
-    /// Answer to `GetTrace`.
+    /// Answer to `GetTrace`
     Trace(u32, Vec<f32>),
     /// Data to be passed to "victim".
     VictimData(u32, Vec<u8>),
     /// Get trace in binary format
     GetTraceBinary,
-    /// Get last trace of instructions
-    GetInstructionTrace,
-    /// Answer to `GetInstructionTrace`
-    InstructionTrace(Vec<String>),
+    /// Generate a trace and response the trace with instructions
+    GetTraceWithInstructions(u32, Vec<u8>),
+    /// Answer to `GetTraceWithInstructions`
+    TraceWithInstructions(u32, Vec<f32>, Vec<String>),
     /// Terminate the program gracefully
     Terminate,
 }
@@ -100,7 +100,7 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
         let command: Command = serde_json::from_str(&line?)?;
         match command {
             Command::VictimData(id, data) => {
-                itc.send(ITCRequest::VictimData(id, data))?;
+                itc.send(ITCRequest::VictimData(id, data, false))?;
             }
             Command::GetTrace(samples) => {
                 if let ITCResponse::Trace(id, mut trace) = itc.recv()? {
@@ -130,15 +130,24 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
                 itc.send(ITCRequest::Terminate)?;
                 break;
             }
-            Command::GetInstructionTrace => {
-                itc.send(ITCRequest::GetInstructionTrace)?;
-                if let ITCResponse::InstructionTrace(trace) = itc.recv()? {
-                    stream_writer.write_all(
-                        serde_json::to_string(&Command::InstructionTrace(trace))?.as_bytes(),
-                    )?;
-                    stream_writer.write_all(b"\n")?;
-                    stream_writer.flush()?;
-                }
+            Command::GetTraceWithInstructions(id, data) => {
+                itc.send(ITCRequest::VictimData(id, data, true))?;
+                let ITCResponse::Trace(id, trace) = itc.recv()? else {
+                    todo!();
+                };
+                let ITCResponse::InstructionTrace(instruction_trace) = itc.recv()? else {
+                    todo!();
+                };
+                stream_writer.write_all(
+                    serde_json::to_string(&Command::TraceWithInstructions(
+                        id,
+                        trace,
+                        instruction_trace,
+                    ))?
+                    .as_bytes(),
+                )?;
+                stream_writer.write_all(b"\n")?;
+                stream_writer.flush()?;
             }
             _ => todo!(),
         }

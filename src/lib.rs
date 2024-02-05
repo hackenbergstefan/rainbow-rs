@@ -56,6 +56,7 @@ pub struct Tracing<'a> {
     capturing: bool,
     register_values: ArrayVec<ScaData<'a>, 16>,
     trace: Vec<f32>,
+    generate_instruction_trace: bool,
     instruction_trace: Vec<&'a OwnedInsn<'static>>,
 }
 
@@ -131,6 +132,7 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
                     trace: Vec::new(),
                     instruction_trace: Vec::new(),
                     capturing: false,
+                    generate_instruction_trace: false,
                 },
                 victim_com,
                 itc,
@@ -347,17 +349,11 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
     /// Shall be called in an idle-loop of victim execution. E.g. `SimpleSerial::getch`.
     fn process_inter_thread_communication(&mut self) -> bool {
         match self.get_data().itc.recv() {
-            Ok(ITCRequest::VictimData(id, data)) => {
+            Ok(ITCRequest::VictimData(id, data, generate_instruction_trace)) => {
                 let inner = self.get_data_mut();
                 inner.tracing.id = id;
+                inner.tracing.generate_instruction_trace = generate_instruction_trace;
                 inner.victim_com.write(data);
-                true
-            }
-            Ok(ITCRequest::GetInstructionTrace) => {
-                self.get_data()
-                    .itc
-                    .send(ITCResponse::InstructionTrace(self.instruction_trace()))
-                    .unwrap();
                 true
             }
             Ok(ITCRequest::Terminate) => false,
@@ -449,8 +445,8 @@ pub fn hook_trigger_high<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<
 /// Predefined hook that stops capturing a trace and sends the trace
 pub fn hook_trigger_low<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<C>>) -> bool {
     hook_force_return(emu);
-    let inner = emu.get_data_mut();
-    inner.tracing.stop_capturing();
+    emu.get_data_mut().tracing.stop_capturing();
+    let inner = emu.get_data();
     inner
         .itc
         .send(ITCResponse::Trace(
@@ -458,6 +454,12 @@ pub fn hook_trigger_low<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<C
             inner.tracing.trace.clone(),
         ))
         .unwrap();
+    if inner.tracing.generate_instruction_trace {
+        inner
+            .itc
+            .send(ITCResponse::InstructionTrace(emu.instruction_trace()))
+            .unwrap();
+    }
 
     true
 }
