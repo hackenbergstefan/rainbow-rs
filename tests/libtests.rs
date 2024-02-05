@@ -264,7 +264,7 @@ fn test_victim_communication() {
     });
 
     channel_host
-        .send(ITCRequest::VictimData(0, vec![1, 2, 3, 4]))
+        .send(ITCRequest::VictimData(0, vec![1, 2, 3, 4], false))
         .unwrap();
 
     emu.set_pc(0x1000_0001).unwrap();

@@ -10,11 +10,9 @@ use crossbeam_channel::{Receiver, Sender};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ITCRequest {
     /// Data to be passed to "victim".
-    VictimData(u32, Vec<u8>),
+    VictimData(u32, Vec<u8>, bool),
     /// Stop simulation.
     Terminate,
-    /// Return instruction trace
-    GetInstructionTrace,
 }
 
 /// Enum holding inter thread responses
