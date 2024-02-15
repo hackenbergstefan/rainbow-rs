@@ -42,6 +42,12 @@ impl Communication for Reflector {
 /// Null leakage. For testing
 pub struct NullLeakage {}
 
+impl Default for NullLeakage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NullLeakage {
     pub fn new() -> Self {
         Self {}
@@ -58,6 +64,11 @@ impl LeakageModel for NullLeakage {
 
     fn cycles_for_calc(&self) -> usize {
         1
+    }
+
+    #[inline]
+    fn memory_buswidth(&self) -> usize {
+        4
     }
 }
 
@@ -152,15 +163,17 @@ fn test_hamming_weight_leakage_memory() {
                     0xc1, 0xf2, 0x00, 0x00, // movt r0, #0x1000
                     0x01, 0x21, // movs r1, #1
                     0x01, 0x60, // str r1, [r0]
-                    0xFF, 0x22, // movs r2, #0xFF
+                    0x0F, 0x22, // movs r2, #0x0F
                     0x02, 0x60, // str r2, [r0]
+                    0x1F, 0x23, // movs r3, #0x1F
+                    0xFF, 0x24, // movs r4, #0xFF
                     0x80, 0xe8, 0x1e, 0x00, // stm r0, {r1, r2, r3, r4}
                     0x00, 0xBF, // nop
                     0x00, 0xBF, // nop for hook
                 ],
             )
         ),
-        &vec![1.0, 2.0, 1.0, 1.0, 8.0, 9.0, 17.0]
+        &vec![1.0, 2.0, 1.0, 1.0, 4.0, 5.0, 5.0, 8.0, 22.0]
     );
 }
 

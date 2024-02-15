@@ -31,6 +31,8 @@ use leakage::LeakageModel;
 
 type Hook<C> = fn(&mut Unicorn<ThumbTraceEmulator<C>>) -> bool;
 
+const MAX_MEMORY_BUS_SIZE: usize = 16;
+
 pub struct ThumbTraceEmulator<'a, C: Communication> {
     elfinfo: &'a ElfInfo,
     capstone: Capstone,
@@ -47,8 +49,8 @@ pub struct ScaData<'a> {
     pub registers: &'a Vec<ArmOperand>,
     pub regvalues_before: ArrayVec<u64, 8>,
     pub regvalues_after: ArrayVec<u64, 8>,
-    pub memory_before: ArrayVec<u64, 8>,
-    pub memory_after: ArrayVec<u64, 8>,
+    pub memory_before: ArrayVec<[u8; MAX_MEMORY_BUS_SIZE], 32>,
+    pub memory_after: ArrayVec<[u8; MAX_MEMORY_BUS_SIZE], 32>,
 }
 
 pub struct Tracing<'a> {
@@ -298,26 +300,32 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
 
     fn hook_memory(&mut self, memtype: MemType, address: u64, size: usize, newvalue: i64) -> bool {
         if self.get_data().tracing.capturing {
-            // TODO: Model buswidth?
-            let size = size.min(4);
-            let oldvalue = {
-                let mut oldvalue = [0; 8];
-                self.mem_read(address, &mut oldvalue[..size]).unwrap();
-                u64::from_le_bytes(oldvalue)
-            };
-            debug!("hook_memory {address:08x} {size} {oldvalue:08x} -> {newvalue:08x}");
+            let buswidth = self.get_data().leakage.memory_buswidth();
+            assert!(buswidth.count_ones() == 1);
+            assert!(buswidth <= MAX_MEMORY_BUS_SIZE);
+
+            let address_aligned = address & !(buswidth as u64 - 1);
+            let mut oldbytes = [0; MAX_MEMORY_BUS_SIZE];
+            self.mem_read(address_aligned, &mut oldbytes[..buswidth])
+                .unwrap();
 
             // Update last scadata
             let inner_mut = self.get_data_mut();
             assert!(!inner_mut.tracing.register_values.is_empty());
             let scadata = inner_mut.tracing.register_values.last_mut().unwrap();
+            scadata.memory_before.push(oldbytes);
             match memtype {
                 MemType::WRITE => {
-                    scadata.memory_before.push(oldvalue);
-                    scadata.memory_after.push(newvalue as u64);
+                    let newbytes = newvalue.to_le_bytes();
+                    let offset = (address & (buswidth as u64 - 1)) as usize;
+                    oldbytes[offset..offset + size].copy_from_slice(&newbytes[..size]);
+                    debug!(
+                        "hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?} -> {oldbytes:x?}"
+                    );
+                    scadata.memory_after.push(oldbytes);
                 }
                 MemType::READ => {
-                    scadata.memory_before.push(oldvalue);
+                    debug!("hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?}");
                 }
                 _ => panic!("Should not happen."),
             }
