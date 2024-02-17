@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: MIT
 
-use crate::ScaData;
+use crate::{ScaData, MAX_MEMORY_BUS_SIZE};
 use arrayvec::ArrayVec;
 use capstone::{arch::arm::ArmInsn, OwnedInsn};
 use itertools::{iproduct, Itertools};
@@ -43,6 +43,16 @@ impl HammingWeight for u128 {
     }
 }
 
+impl HammingWeight for &[u8] {
+    fn hamming(self) -> u32 {
+        self.iter().map(|x| x.count_ones()).sum()
+    }
+}
+
+fn hamming_distance(xs: &[u8], ys: &[u8]) -> u32 {
+    xs.iter().zip(ys).map(|(x, y)| (x ^ y).hamming()).sum()
+}
+
 #[derive(Debug)]
 pub struct Leakage<'a> {
     pub instruction: &'a OwnedInsn<'static>,
@@ -54,8 +64,11 @@ pub trait LeakageModel {
     /// Calculate the value of the trace point at given instruction
     fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a>;
 
-    /// Number of cycles that are incoporated into the leakage calculation
+    /// Number of cycles that are incorporated into the leakage calculation
     fn cycles_for_calc(&self) -> usize;
+
+    /// Bus width
+    fn memory_buswidth(&self) -> usize;
 }
 
 /// Hamming Weight leakage.
@@ -80,8 +93,13 @@ impl LeakageModel for HammingWeightLeakage {
         1
     }
 
+    #[inline]
+    fn memory_buswidth(&self) -> usize {
+        4
+    }
+
     fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
-        debug!("Calculate HammingWeightLeakage for {:?}", scadata);
+        debug!("Calculate HammingWeightLeakage for {:x?}", scadata);
 
         assert!(scadata.len() == 1);
         let scadata = &scadata[0];
@@ -148,6 +166,11 @@ impl LeakageModel for HammingDistanceLeakage {
         1
     }
 
+    #[inline]
+    fn memory_buswidth(&self) -> usize {
+        4
+    }
+
     fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
         assert!(scadata.len() == 1);
         let scadata = &scadata[0];
@@ -166,7 +189,7 @@ impl LeakageModel for HammingDistanceLeakage {
             .memory_before
             .iter()
             .zip(scadata.memory_after.iter())
-            .map(|(before, after)| (before ^ after).hamming())
+            .map(|(before, after)| hamming_distance(before, after))
             .sum::<u32>() as f32;
 
         let mut leakage = Leakage {
@@ -254,8 +277,8 @@ impl ElmoPowerLeakageCoefficients {
 /// Elmo Power Leakage Model
 pub struct ElmoPowerLeakage {
     coefficients: ElmoPowerLeakageCoefficients,
-    readbus: u64,
-    writebus: u64,
+    readbus: [u8; MAX_MEMORY_BUS_SIZE],
+    writebus: [u8; MAX_MEMORY_BUS_SIZE],
     resistance: f32,
     supplyvoltage: f32,
 }
@@ -264,8 +287,8 @@ impl ElmoPowerLeakage {
     pub fn new(coefficient_file: &str) -> Self {
         Self {
             coefficients: ElmoPowerLeakageCoefficients::new(coefficient_file),
-            readbus: 0,
-            writebus: 0,
+            readbus: [0; MAX_MEMORY_BUS_SIZE],
+            writebus: [0; MAX_MEMORY_BUS_SIZE],
             resistance: 360.0,
             supplyvoltage: 3.0,
         }
@@ -312,16 +335,41 @@ impl ElmoPowerLeakage {
 
         {
             if !current.memory_after.is_empty() {
-                current0 = *current.memory_before.last().unwrap();
-                current1 = *current.memory_after.last().unwrap();
+                current0 = u64::from_le_bytes(
+                    current.memory_before.last().unwrap()[..8]
+                        .try_into()
+                        .unwrap(),
+                );
+                current1 = u64::from_le_bytes(
+                    current.memory_after.last().unwrap()[..8]
+                        .try_into()
+                        .unwrap(),
+                );
             } else if !current.memory_before.is_empty() {
-                current1 = *current.memory_before.last().unwrap();
+                current1 = u64::from_le_bytes(
+                    current.memory_before.last().unwrap()[..8]
+                        .try_into()
+                        .unwrap(),
+                );
             }
             if !previous.memory_after.is_empty() {
-                previous0 = *previous.memory_before.last().unwrap();
-                previous1 = *previous.memory_after.last().unwrap();
+                previous0 = u64::from_le_bytes(
+                    previous.memory_before.last().unwrap()[..8]
+                        .try_into()
+                        .unwrap(),
+                );
+
+                previous1 = u64::from_le_bytes(
+                    previous.memory_after.last().unwrap()[..8]
+                        .try_into()
+                        .unwrap(),
+                );
             } else if !previous.memory_before.is_empty() {
-                previous1 = *previous.memory_before.last().unwrap();
+                previous1 = u64::from_le_bytes(
+                    previous.memory_before.last().unwrap()[..8]
+                        .try_into()
+                        .unwrap(),
+                );
             }
         }
 
@@ -447,7 +495,7 @@ impl ElmoPowerLeakage {
                     .map(|(before, after)| {
                         self.coefficients.hd_operand1_previous_instruction[0]
                             [current_instruction_type]
-                            * (before ^ after).hamming() as f64
+                            * hamming_distance(before, after) as f64
                     })
                     .sum::<f64>()
             } else {
@@ -457,7 +505,7 @@ impl ElmoPowerLeakage {
                     .map(|(before, after)| {
                         self.coefficients.hd_operand1_previous_instruction[0]
                             [current_instruction_type]
-                            * (before ^ after).hamming() as f64
+                            * hamming_distance(before, after) as f64
                     })
                     .sum()
             }
@@ -557,6 +605,11 @@ impl LeakageModel for ElmoPowerLeakage {
         3
     }
 
+    #[inline]
+    fn memory_buswidth(&self) -> usize {
+        4
+    }
+
     fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
         assert!(scadata.len() == 3);
         let leakage_value = self.calculate_powermodel(&scadata[0], &scadata[1], &scadata[2]);
@@ -588,12 +641,16 @@ impl LeakageModel for ElmoPowerLeakage {
 
 #[derive(Default)]
 pub struct PessimisticHammingLeakage {
-    busvalue: u64,
+    buswidth: usize,
+    busvalue: [u8; MAX_MEMORY_BUS_SIZE],
 }
 
 impl PessimisticHammingLeakage {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(buswidth: usize) -> Self {
+        PessimisticHammingLeakage {
+            buswidth,
+            ..Default::default()
+        }
     }
 }
 
@@ -601,6 +658,11 @@ impl LeakageModel for PessimisticHammingLeakage {
     #[inline]
     fn cycles_for_calc(&self) -> usize {
         2
+    }
+
+    #[inline]
+    fn memory_buswidth(&self) -> usize {
+        self.buswidth
     }
 
     fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {
@@ -666,7 +728,7 @@ impl LeakageModel for PessimisticHammingLeakage {
                 current_data.memory_before.iter(),
                 current_data.memory_after.iter()
             )
-            .map(|(x, y)| (x ^ y).hamming())
+            .map(|(x, y)| hamming_distance(x, y))
             .sum::<u32>();
 
             if !current_data.memory_before.is_empty() {
@@ -674,8 +736,12 @@ impl LeakageModel for PessimisticHammingLeakage {
                     std::iter::once(self.busvalue),
                     current_data.memory_before.iter()
                 )
-                .map(|(x, y)| (x ^ y).hamming())
+                .map(|(x, y)| hamming_distance(&x, y))
                 .sum::<u32>();
+                debug!(
+                    "bus leakage {:x?} ^ {:x?}",
+                    self.busvalue, current_data.memory_before,
+                );
             }
             if !current_data.memory_after.is_empty() {
                 self.busvalue = *current_data.memory_after.last().unwrap();

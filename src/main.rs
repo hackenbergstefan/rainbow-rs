@@ -44,6 +44,9 @@ struct CmdlineArgs {
     /// Path to coefficient file if leakage is elmo
     #[arg(long, value_parser = file_exists)]
     coefficientfile: Option<String>,
+    /// Width of memory bus in bytes. Only considered for PessimisticHammingLeakage.
+    #[arg(long, default_value = "16", value_parser = clap::builder::PossibleValuesParser::new(["4", "8", "16"]))]
+    buswidth: usize,
     /// Host and port of communication socket
     #[arg(short, long, default_value = "127.0.0.1:6666")]
     socket: String,
@@ -182,7 +185,7 @@ fn main() -> Result<()> {
                         LeakageModel::HammingDistance => Box::new(HammingDistanceLeakage::new()),
                         LeakageModel::Elmo => Box::new(ElmoPowerLeakage::new(&coeffs)),
                         LeakageModel::PessimisticHammingLeakage => {
-                            Box::new(PessimisticHammingLeakage::new())
+                            Box::new(PessimisticHammingLeakage::new(args.buswidth))
                         }
                     },
                     client.clone(),
