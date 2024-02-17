@@ -34,19 +34,22 @@ fn create_instruction_map<'a>(
 ) -> Result<BTreeMap<u64, (OwnedInsn<'static>, Vec<ArmOperand>)>> {
     let mut map = BTreeMap::new();
 
-    let capstone = Capstone::new()
+    let mut capstone = Capstone::new()
         .arm()
         .mode(capstone::arch::arm::ArchMode::Thumb)
         .detail(true)
         .build()
         .unwrap();
+    capstone.set_skipdata(true).unwrap();
 
     for Segment(addr, data) in segments {
         let instructions = capstone
             .disasm_all(data, *addr)
             .map_err(CapstoneError::new)?;
         for insn in instructions.iter() {
-            let insn_detail = capstone.insn_detail(insn).unwrap();
+            let Ok(insn_detail) = capstone.insn_detail(insn) else {
+                continue;
+            };
             let insn_detail = insn_detail.arch_detail();
             let insn_detail = insn_detail.arm().unwrap();
             let addr = insn.address();
