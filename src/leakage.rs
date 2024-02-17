@@ -641,12 +641,16 @@ impl LeakageModel for ElmoPowerLeakage {
 
 #[derive(Default)]
 pub struct PessimisticHammingLeakage {
+    buswidth: usize,
     busvalue: [u8; MAX_MEMORY_BUS_SIZE],
 }
 
 impl PessimisticHammingLeakage {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(buswidth: usize) -> Self {
+        PessimisticHammingLeakage {
+            buswidth,
+            ..Default::default()
+        }
     }
 }
 
@@ -658,7 +662,7 @@ impl LeakageModel for PessimisticHammingLeakage {
 
     #[inline]
     fn memory_buswidth(&self) -> usize {
-        16
+        self.buswidth
     }
 
     fn calculate<'a>(&mut self, scadata: &[ScaData<'a>]) -> Leakage<'a> {

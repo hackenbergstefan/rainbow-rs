@@ -316,13 +316,14 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
             scadata.memory_before.push(oldbytes);
             match memtype {
                 MemType::WRITE => {
-                    let newbytes = newvalue.to_le_bytes();
                     let offset = (address & (buswidth as u64 - 1)) as usize;
-                    oldbytes[offset..offset + size].copy_from_slice(&newbytes[..size]);
+                    let mut newbytes = oldbytes;
+                    newbytes[offset..offset + size]
+                        .copy_from_slice(&newvalue.to_le_bytes()[..size]);
                     debug!(
-                        "hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?} -> {oldbytes:x?}"
+                        "hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?} -> {newbytes:x?}"
                     );
-                    scadata.memory_after.push(oldbytes);
+                    scadata.memory_after.push(newbytes);
                 }
                 MemType::READ => {
                     debug!("hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?}");
