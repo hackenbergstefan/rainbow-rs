@@ -9,6 +9,7 @@ pub mod communication;
 pub mod error;
 pub mod itc;
 pub mod leakage;
+pub mod memory_extension;
 
 use anyhow::{Context, Result};
 use arrayvec::ArrayVec;
@@ -18,6 +19,7 @@ use capstone::{
     Capstone, OwnedInsn,
 };
 use log::{debug, info, trace};
+use memory_extension::{MemoryExtension, MAX_BUS_SIZE};
 use unicorn_engine::{
     unicorn_const::{Arch, HookType, MemType, Mode, Permission},
     RegisterARM, Unicorn,
@@ -31,13 +33,16 @@ use leakage::LeakageModel;
 
 type Hook<C> = fn(&mut Unicorn<ThumbTraceEmulator<C>>) -> bool;
 
-const MAX_MEMORY_BUS_SIZE: usize = 16;
+/// Maximum number of memory updates per instruction.
+/// Reached at e.g. `push {r0-r7}`
+const MAX_MEMORY_UPDATES_PER_INSTRUCTION: usize = 8;
 
 pub struct ThumbTraceEmulator<'a, C: Communication> {
     elfinfo: &'a ElfInfo,
     capstone: Capstone,
     hooks: Vec<(u64, Hook<C>)>,
     leakage: Box<dyn LeakageModel>,
+    memory: Box<dyn MemoryExtension>,
     tracing: Tracing<'a>,
     victim_com: C,
     itc: BiChannel<ITCResponse, ITCRequest>,
@@ -49,8 +54,12 @@ pub struct ScaData<'a> {
     pub registers: &'a Vec<ArmOperand>,
     pub regvalues_before: ArrayVec<u64, 8>,
     pub regvalues_after: ArrayVec<u64, 8>,
-    pub memory_before: ArrayVec<[u8; MAX_MEMORY_BUS_SIZE], 32>,
-    pub memory_after: ArrayVec<[u8; MAX_MEMORY_BUS_SIZE], 32>,
+    pub cache_updates:
+        ArrayVec<([u8; MAX_BUS_SIZE], [u8; MAX_BUS_SIZE]), MAX_MEMORY_UPDATES_PER_INSTRUCTION>,
+    pub bus_updates:
+        ArrayVec<([u8; MAX_BUS_SIZE], [u8; MAX_BUS_SIZE]), MAX_MEMORY_UPDATES_PER_INSTRUCTION>,
+    pub memory_updates:
+        ArrayVec<([u8; MAX_BUS_SIZE], [u8; MAX_BUS_SIZE]), MAX_MEMORY_UPDATES_PER_INSTRUCTION>,
 }
 
 pub struct Tracing<'a> {
@@ -79,6 +88,7 @@ pub trait ThumbTraceEmulatorTrait<'a, C: Communication>: Sized {
     fn new(
         elfinfo: &'a ElfInfo,
         leakage: Box<dyn LeakageModel>,
+        memory: Box<dyn MemoryExtension>,
         victim_com: C,
         itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Result<Self>;
@@ -112,6 +122,7 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
     fn new(
         elfinfo: &'a ElfInfo,
         leakage: Box<dyn LeakageModel>,
+        memory: Box<dyn MemoryExtension>,
         victim_com: C,
         itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Result<Self> {
@@ -128,6 +139,7 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
                     .map_err(CapstoneError::new)?,
                 hooks: Vec::new(),
                 leakage,
+                memory,
                 tracing: Tracing {
                     id: 0,
                     register_values: ArrayVec::new(),
@@ -291,8 +303,9 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
                     registers: instruction_registers,
                     regvalues_before,
                     regvalues_after: ArrayVec::new(),
-                    memory_before: ArrayVec::new(),
-                    memory_after: ArrayVec::new(),
+                    cache_updates: ArrayVec::new(),
+                    bus_updates: ArrayVec::new(),
+                    memory_updates: ArrayVec::new(),
                 });
             }
         }
@@ -300,36 +313,73 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
 
     fn hook_memory(&mut self, memtype: MemType, address: u64, size: usize, newvalue: i64) -> bool {
         if self.get_data().tracing.capturing {
-            let buswidth = self.get_data().leakage.memory_buswidth();
-            assert!(buswidth.count_ones() == 1);
-            assert!(buswidth <= MAX_MEMORY_BUS_SIZE);
+            let inner = self.get_data();
+            assert!(!inner.tracing.register_values.is_empty());
+            assert!(size <= MAX_BUS_SIZE);
 
-            let address_aligned = address & !(buswidth as u64 - 1);
-            let mut oldbytes = [0; MAX_MEMORY_BUS_SIZE];
-            self.mem_read(address_aligned, &mut oldbytes[..buswidth])
+            // Read old memory and calculate new memory
+            let (oldbytes, newbytes) = {
+                let bussize = inner.memory.bus_size();
+                let address_aligned = if bussize != 0 {
+                    address & !(bussize as u64 - 1)
+                } else {
+                    address
+                };
+                let mut oldbytes = [0; MAX_BUS_SIZE];
+                self.mem_read(
+                    address_aligned,
+                    &mut oldbytes[..(if bussize != 0 { bussize } else { size })],
+                )
                 .unwrap();
-
-            // Update last scadata
-            let inner_mut = self.get_data_mut();
-            assert!(!inner_mut.tracing.register_values.is_empty());
-            let scadata = inner_mut.tracing.register_values.last_mut().unwrap();
-            scadata.memory_before.push(oldbytes);
-            match memtype {
-                MemType::WRITE => {
-                    let offset = (address & (buswidth as u64 - 1)) as usize;
-                    let mut newbytes = oldbytes;
+                let mut newbytes = oldbytes;
+                if memtype == MemType::WRITE {
+                    let offset = if bussize != 0 {
+                        (address & (bussize as u64 - 1)) as usize
+                    } else {
+                        0
+                    };
                     newbytes[offset..offset + size]
                         .copy_from_slice(&newvalue.to_le_bytes()[..size]);
-                    debug!(
-                        "hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?} -> {newbytes:x?}"
-                    );
-                    scadata.memory_after.push(newbytes);
                 }
-                MemType::READ => {
-                    debug!("hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?}");
-                }
-                _ => panic!("Should not happen."),
-            }
+                (oldbytes, newbytes)
+            };
+
+            let inner_mut = self.get_data_mut();
+            let scadata = inner_mut.tracing.register_values.last_mut().unwrap();
+            inner_mut
+                .memory
+                .update(scadata, memtype, address, oldbytes, newbytes);
+
+            // let buswidth = self.get_data().leakage.memory_buswidth();
+            // assert!(buswidth.count_ones() == 1);
+            // assert!(buswidth <= MAX_MEMORY_BUS_SIZE);
+
+            // let address_aligned = address & !(buswidth as u64 - 1);
+            // let mut oldbytes = [0; MAX_MEMORY_BUS_SIZE];
+            // self.mem_read(address_aligned, &mut oldbytes[..buswidth])
+            //     .unwrap();
+
+            // // Update last scadata
+            // let inner_mut = self.get_data_mut();
+            // assert!(!inner_mut.tracing.register_values.is_empty());
+            // let scadata = inner_mut.tracing.register_values.last_mut().unwrap();
+            // scadata.memory_before.push(oldbytes);
+            // match memtype {
+            //     MemType::WRITE => {
+            //         let offset = (address & (buswidth as u64 - 1)) as usize;
+            //         let mut newbytes = oldbytes;
+            //         newbytes[offset..offset + size]
+            //             .copy_from_slice(&newvalue.to_le_bytes()[..size]);
+            //         debug!(
+            //             "hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?} -> {newbytes:x?}"
+            //         );
+            //         scadata.memory_after.push(newbytes);
+            //     }
+            //     MemType::READ => {
+            //         debug!("hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?}");
+            //     }
+            //     _ => panic!("Should not happen."),
+            // }
         }
         true
     }
@@ -375,11 +425,12 @@ impl<'a, C: Communication> ThumbTraceEmulator<'a, C> {
     pub fn new(
         elfinfo: &'a ElfInfo,
         leakage: Box<dyn LeakageModel>,
+        memory: Box<dyn MemoryExtension>,
         victim_com: C,
         itc: BiChannel<ITCResponse, ITCRequest>,
     ) -> Result<Unicorn<'_, ThumbTraceEmulator<'_, C>>> {
         <Unicorn<'a, ThumbTraceEmulator<'a, C>> as ThumbTraceEmulatorTrait<'a, C>>::new(
-            elfinfo, leakage, victim_com, itc,
+            elfinfo, leakage, memory, victim_com, itc,
         )
     }
 }
@@ -388,12 +439,13 @@ impl<'a, C: Communication> ThumbTraceEmulator<'a, C> {
 pub fn new_simpleserialsocket_stm32f4<'a>(
     elfinfo: &'a ElfInfo,
     leakage: Box<dyn LeakageModel>,
+    memory: Box<dyn MemoryExtension>,
     itc: BiChannel<ITCResponse, ITCRequest>,
 ) -> Result<Unicorn<'a, ThumbTraceEmulator<'a, SimpleSerial>>> {
     let mut emu = <Unicorn<'a, ThumbTraceEmulator<'a, SimpleSerial>> as ThumbTraceEmulatorTrait<
         'a,
         SimpleSerial,
-    >>::new(elfinfo, leakage, SimpleSerial::new(), itc)?;
+    >>::new(elfinfo, leakage, memory, SimpleSerial::new(), itc)?;
 
     // Set memory map
     {
