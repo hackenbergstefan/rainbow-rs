@@ -2,14 +2,21 @@
 //
 // SPDX-License-Identifier: MIT
 
+#![allow(clippy::items_after_test_module)]
+
 use arrayvec::ArrayVec;
 use rainbow_rs::{
     asmutils::{ElfInfo, Segment},
     communication::Communication,
     itc::{create_inter_thread_channels, BiChannel, ITCRequest, ITCResponse},
-    leakage::{HammingDistanceLeakage, HammingWeightLeakage, Leakage, LeakageModel},
+    leakage::{
+        HammingDistanceLeakage, HammingWeightLeakage, Leakage, LeakageModel,
+        PessimisticHammingLeakage,
+    },
+    memory_extension::{BusNoCache, CacheLru, MemoryExtension, NoBusNoCache},
     ScaData, ThumbTraceEmulator, ThumbTraceEmulatorTrait,
 };
+use rstest::rstest;
 use unicorn_engine::unicorn_const::Permission;
 
 #[ctor::ctor]
@@ -65,19 +72,19 @@ impl LeakageModel for NullLeakage {
     fn cycles_for_calc(&self) -> usize {
         1
     }
-
-    #[inline]
-    fn memory_buswidth(&self) -> usize {
-        4
-    }
 }
 
-fn generate_leakage(leakage: Box<dyn LeakageModel>, segment: Segment) -> Vec<f32> {
+fn generate_leakage(
+    leakage: Box<dyn LeakageModel>,
+    memory: Box<dyn MemoryExtension>,
+    segment: Segment,
+) -> Vec<f32> {
     let (_, channel_emu) = create_inter_thread_channels();
     let elfinfo = ElfInfo::new_from_binary(vec![segment]).unwrap();
     let mut emu = ThumbTraceEmulator::new(
         &elfinfo,
         leakage,
+        memory,
         Reflector::new(channel_emu.clone()),
         channel_emu,
     )
@@ -107,17 +114,19 @@ fn generate_leakage(leakage: Box<dyn LeakageModel>, segment: Segment) -> Vec<f32
     emu.get_trace().clone()
 }
 
-#[test]
-fn test_hamming_weight_leakage() {
-    // Test basic hamming weight changes
+#[rstest]
+#[case(Box::new(HammingWeightLeakage::new()), vec![1.0, 2.0, 3.0, 4.0])]
+#[case(Box::new(HammingDistanceLeakage::new()), vec![1.0, 1.0, 1.0, 1.0])]
+fn test_register_leakage(#[case] leakage: Box<dyn LeakageModel>, #[case] expected: Vec<f32>) {
     assert_eq!(
         &generate_leakage(
-            Box::new(HammingWeightLeakage::new()),
+            leakage,
+            Box::new(NoBusNoCache::new()),
             Segment(
                 0x1000_0000,
                 vec![
                     0x00, 0xBF, // nop for hook
-                    0x00, 0x20, // movs r0, #0x00
+                    0x01, 0x20, // movs r0, #0x01
                     0x03, 0x20, // movs r0, #0x03
                     0x07, 0x20, // movs r0, #0x07
                     0x0F, 0x20, // movs r0, #0x0F
@@ -126,7 +135,7 @@ fn test_hamming_weight_leakage() {
                 ],
             )
         ),
-        &vec![0.0, 2.0, 3.0, 4.0]
+        &expected
     );
 }
 
@@ -135,6 +144,7 @@ fn test_hamming_weight_leakage_memory() {
     assert_eq!(
         &generate_leakage(
             Box::new(HammingWeightLeakage::new()),
+            Box::new(NoBusNoCache::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -149,12 +159,13 @@ fn test_hamming_weight_leakage_memory() {
                 ],
             )
         ),
-        &vec![1.0, 2.0, 1.0, 1.0, 2.0]
+        &vec![1.0, 2.0, 1.0, 1.0, 3.0]
     );
 
     assert_eq!(
         &generate_leakage(
             Box::new(HammingWeightLeakage::new()),
+            Box::new(NoBusNoCache::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -178,33 +189,11 @@ fn test_hamming_weight_leakage_memory() {
 }
 
 #[test]
-fn test_hamming_distance_leakage() {
-    // Test basic hamming weight changes
-    assert_eq!(
-        &generate_leakage(
-            Box::new(HammingDistanceLeakage::new()),
-            Segment(
-                0x1000_0000,
-                vec![
-                    0x00, 0xBF, // nop for hook
-                    0x01, 0x20, // movs r0, #0x01
-                    0x03, 0x20, // movs r0, #0x03
-                    0x07, 0x20, // movs r0, #0x07
-                    0x0F, 0x20, // movs r0, #0x0F
-                    0x00, 0xBF, // nop
-                    0x00, 0xBF, // nop for hook
-                ],
-            )
-        ),
-        &vec![1.0, 1.0, 1.0, 1.0]
-    );
-}
-
-#[test]
 fn test_hamming_distance_leakage_memory() {
     assert_eq!(
         &generate_leakage(
             Box::new(HammingWeightLeakage::new()),
+            Box::new(NoBusNoCache::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -219,12 +208,13 @@ fn test_hamming_distance_leakage_memory() {
                 ],
             )
         ),
-        &vec![1.0, 2.0, 1.0, 1.0, 2.0]
+        &vec![1.0, 2.0, 1.0, 1.0, 3.0]
     );
 
     assert_eq!(
         &generate_leakage(
             Box::new(HammingDistanceLeakage::new()),
+            Box::new(NoBusNoCache::new()),
             Segment(
                 0x1000_0000,
                 vec![
@@ -247,6 +237,63 @@ fn test_hamming_distance_leakage_memory() {
     );
 }
 
+#[rstest]
+#[case(Box::new(HammingWeightLeakage::new()), vec![1.0, 2.0, 4.0, 4.0, 8.0, 12.0, 9.0])]
+#[case(Box::new(HammingDistanceLeakage::new()), vec![1.0, 1.0, 4.0, 4.0, 8.0, 12.0, 11.0])]
+fn test_leakage_memory_bus(#[case] leakage: Box<dyn LeakageModel>, #[case] expected: Vec<f32>) {
+    assert_eq!(
+        &generate_leakage(
+            leakage,
+            Box::new(BusNoCache::new(4)),
+            Segment(
+                0x1000_0000,
+                vec![
+                    0x00, 0xBF, // nop for hook
+                    0x5f, 0xf4, 0x80, 0x70, // movs r0, #0x0100
+                    0xc1, 0xf2, 0x00, 0x00, // movt r0, #0x1000
+                    0x4f, 0xf0, 0x01, 0x31, // mov r1, #0x01010101
+                    0x4f, 0xf0, 0x10, 0x32, // mov r2, #0x10101010
+                    0x01, 0x60, // str r1, [r0]
+                    0x02, 0x61, // str r2, [r0, #16]
+                    0x01, 0x78, // ldrb r1, [r0]
+                    0x00, 0xBF, // nop
+                    0x00, 0xBF, // nop for hook
+                ],
+            )
+        ),
+        &expected
+    );
+}
+
+#[rstest]
+#[case(Box::new(HammingWeightLeakage::new()), vec![1.0, 2.0, 4.0, 4.0, 8.0, 12.0, 1.0])]
+#[case(Box::new(HammingDistanceLeakage::new()), vec![1.0, 1.0, 4.0, 4.0, 8.0, 12.0, 3.0])]
+#[case(Box::new(PessimisticHammingLeakage::new()), vec![4.0, 10.0, 12.0, 28.0, 32.0, 16.0])]
+fn test_leakage_cache(#[case] leakage: Box<dyn LeakageModel>, #[case] expected: Vec<f32>) {
+    assert_eq!(
+        &generate_leakage(
+            leakage,
+            Box::new(CacheLru::new(4, 2)),
+            Segment(
+                0x1000_0000,
+                vec![
+                    0x00, 0xBF, // nop for hook
+                    0x5f, 0xf4, 0x80, 0x70, // movs r0, #0x0100
+                    0xc1, 0xf2, 0x00, 0x00, // movt r0, #0x1000
+                    0x4f, 0xf0, 0x01, 0x31, // mov r1, #0x01010101
+                    0x4f, 0xf0, 0x10, 0x32, // mov r2, #0x10101010
+                    0x01, 0x60, // str r1, [r0]
+                    0x02, 0x61, // str r2, [r0, #16]
+                    0x01, 0x78, // ldrb r1, [r0] <- Already cached
+                    0x00, 0xBF, // nop
+                    0x00, 0xBF, // nop for hook
+                ],
+            )
+        ),
+        &expected
+    );
+}
+
 #[test]
 fn test_victim_communication() {
     let (channel_host, channel_emu) = create_inter_thread_channels();
@@ -263,6 +310,7 @@ fn test_victim_communication() {
     let mut emu = ThumbTraceEmulator::new(
         &elfinfo,
         Box::new(HammingWeightLeakage::new()),
+        Box::new(NoBusNoCache::new()),
         Reflector::new(channel_emu.clone()),
         channel_emu,
     )
@@ -306,6 +354,7 @@ fn test_terminate() {
     let mut emu = ThumbTraceEmulator::new(
         &elfinfo,
         Box::new(HammingWeightLeakage::new()),
+        Box::new(NoBusNoCache::new()),
         Reflector::new(channel_emu.clone()),
         channel_emu,
     )

@@ -21,6 +21,7 @@ use rainbow_rs::{
     leakage::{
         ElmoPowerLeakage, HammingDistanceLeakage, HammingWeightLeakage, PessimisticHammingLeakage,
     },
+    memory_extension::{BusNoCache, CacheLru, NoBusNoCache, MAX_BUS_SIZE, MAX_CACHE_LINES},
     new_simpleserialsocket_stm32f4, ThumbTraceEmulatorTrait,
 };
 
@@ -30,6 +31,13 @@ enum LeakageModel {
     HammingDistance,
     Elmo,
     PessimisticHammingLeakage,
+}
+
+#[derive(ValueEnum, Debug, Clone)]
+enum MemoryExtension {
+    NoBusNoCache,
+    BusNoCache,
+    CacheLru,
 }
 
 #[derive(Parser, Debug)]
@@ -44,9 +52,15 @@ struct CmdlineArgs {
     /// Path to coefficient file if leakage is elmo
     #[arg(long, value_parser = file_exists)]
     coefficientfile: Option<String>,
+    /// Memory extension
+    #[arg(long)]
+    memory_extension: MemoryExtension,
     /// Width of memory bus in bytes. Only considered for PessimisticHammingLeakage.
     #[arg(long, default_value = "16", value_parser = clap::builder::PossibleValuesParser::new(["4", "8", "16"]))]
-    buswidth: usize,
+    memory_buswidth: usize,
+    /// Number of cache lines. Only considered for Caches.
+    #[arg(long, default_value = "4", value_parser = clap::builder::PossibleValuesParser::new(["2", "3", "4"]))]
+    memory_cache_lines: usize,
     /// Host and port of communication socket
     #[arg(short, long, default_value = "127.0.0.1:6666")]
     socket: String,
@@ -160,6 +174,11 @@ fn listen_forever(socket_address: &str, itc: BiChannel<ITCRequest, ITCResponse>)
 
 fn main() -> Result<()> {
     let args = CmdlineArgs::parse();
+
+    // TODO: Use clap to validate this
+    assert!(args.memory_buswidth.count_ones() == 1 && args.memory_buswidth < MAX_BUS_SIZE);
+    assert!(args.memory_cache_lines < MAX_CACHE_LINES);
+
     simple_logger::SimpleLogger::new()
         .with_level(match args.verbose {
             1 => LevelFilter::Info,
@@ -185,7 +204,16 @@ fn main() -> Result<()> {
                         LeakageModel::HammingDistance => Box::new(HammingDistanceLeakage::new()),
                         LeakageModel::Elmo => Box::new(ElmoPowerLeakage::new(&coeffs)),
                         LeakageModel::PessimisticHammingLeakage => {
-                            Box::new(PessimisticHammingLeakage::new(args.buswidth))
+                            Box::new(PessimisticHammingLeakage::new())
+                        }
+                    },
+                    match args.memory_extension {
+                        MemoryExtension::NoBusNoCache => Box::new(NoBusNoCache::new()),
+                        MemoryExtension::BusNoCache => {
+                            Box::new(BusNoCache::new(args.memory_buswidth))
+                        }
+                        MemoryExtension::CacheLru => {
+                            Box::new(CacheLru::new(args.memory_buswidth, args.memory_cache_lines))
                         }
                     },
                     client.clone(),
