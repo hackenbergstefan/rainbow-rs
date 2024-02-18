@@ -35,7 +35,7 @@ type Hook<C> = fn(&mut Unicorn<ThumbTraceEmulator<C>>) -> bool;
 
 /// Maximum number of memory updates per instruction.
 /// Reached at e.g. `push {r0-r7}`
-const MAX_MEMORY_UPDATES_PER_INSTRUCTION: usize = 8;
+const MAX_MEMORY_UPDATES_PER_INSTRUCTION: usize = 16;
 
 pub struct ThumbTraceEmulator<'a, C: Communication> {
     elfinfo: &'a ElfInfo,
@@ -318,13 +318,13 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
             assert!(size <= MAX_BUS_SIZE);
 
             // Read old memory and calculate new memory
+            let bussize = inner.memory.bus_size();
+            let address_aligned = if bussize != 0 {
+                address & !(bussize as u64 - 1)
+            } else {
+                address
+            };
             let (oldbytes, newbytes) = {
-                let bussize = inner.memory.bus_size();
-                let address_aligned = if bussize != 0 {
-                    address & !(bussize as u64 - 1)
-                } else {
-                    address
-                };
                 let mut oldbytes = [0; MAX_BUS_SIZE];
                 self.mem_read(
                     address_aligned,
@@ -340,6 +340,18 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
                     };
                     newbytes[offset..offset + size]
                         .copy_from_slice(&newvalue.to_le_bytes()[..size]);
+                    if log::log_enabled!(log::Level::Trace) {
+                        let mut data = [0; MAX_BUS_SIZE];
+                        self.mem_read(address, &mut data[..size]).unwrap();
+                        trace!(
+                            "hook_memory: {address:08x} {size}: {:x?} -> {:x?}
+                            {address_aligned:08x} {bussize}: {:x?} -> {:x?}",
+                            &data[..size],
+                            &newvalue.to_le_bytes()[..size],
+                            &oldbytes,
+                            &newbytes
+                        );
+                    }
                 }
                 (oldbytes, newbytes)
             };
@@ -348,48 +360,20 @@ impl<'a, C: Communication> ThumbTraceEmulatorTrait<'a, C>
             let scadata = inner_mut.tracing.register_values.last_mut().unwrap();
             inner_mut
                 .memory
-                .update(scadata, memtype, address, oldbytes, newbytes);
-
-            // let buswidth = self.get_data().leakage.memory_buswidth();
-            // assert!(buswidth.count_ones() == 1);
-            // assert!(buswidth <= MAX_MEMORY_BUS_SIZE);
-
-            // let address_aligned = address & !(buswidth as u64 - 1);
-            // let mut oldbytes = [0; MAX_MEMORY_BUS_SIZE];
-            // self.mem_read(address_aligned, &mut oldbytes[..buswidth])
-            //     .unwrap();
-
-            // // Update last scadata
-            // let inner_mut = self.get_data_mut();
-            // assert!(!inner_mut.tracing.register_values.is_empty());
-            // let scadata = inner_mut.tracing.register_values.last_mut().unwrap();
-            // scadata.memory_before.push(oldbytes);
-            // match memtype {
-            //     MemType::WRITE => {
-            //         let offset = (address & (buswidth as u64 - 1)) as usize;
-            //         let mut newbytes = oldbytes;
-            //         newbytes[offset..offset + size]
-            //             .copy_from_slice(&newvalue.to_le_bytes()[..size]);
-            //         debug!(
-            //             "hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?} -> {newbytes:x?}"
-            //         );
-            //         scadata.memory_after.push(newbytes);
-            //     }
-            //     MemType::READ => {
-            //         debug!("hook_memory {address_aligned:08x} {buswidth} {oldbytes:x?}");
-            //     }
-            //     _ => panic!("Should not happen."),
-            // }
+                .update(scadata, memtype, address_aligned, oldbytes, newbytes);
         }
         true
     }
 
     fn start_capturing(&mut self) {
+        debug!("start capturing");
         self.get_data_mut().tracing.start_capturing();
     }
 
     fn stop_capturing(&mut self) {
+        debug!("stop capturing");
         self.get_data_mut().tracing.stop_capturing();
+        self.get_data_mut().memory.reset();
     }
 
     fn get_trace(&self) -> &Vec<f32> {
@@ -498,7 +482,7 @@ pub fn hook_force_return<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<
 /// Predefined hook that start capturing a trace
 pub fn hook_trigger_high<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<C>>) -> bool {
     hook_force_return(emu);
-    emu.get_data_mut().tracing.start_capturing();
+    emu.start_capturing();
 
     true
 }
@@ -506,7 +490,7 @@ pub fn hook_trigger_high<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<
 /// Predefined hook that stops capturing a trace and sends the trace
 pub fn hook_trigger_low<C: Communication>(emu: &mut Unicorn<ThumbTraceEmulator<C>>) -> bool {
     hook_force_return(emu);
-    emu.get_data_mut().tracing.stop_capturing();
+    emu.stop_capturing();
     let inner = emu.get_data();
     inner
         .itc

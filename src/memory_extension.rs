@@ -5,6 +5,7 @@
 //! Implementation of different memory extensions.
 
 use arrayvec::ArrayVec;
+use log::trace;
 use unicorn_engine::unicorn_const::MemType;
 
 use crate::ScaData;
@@ -20,7 +21,8 @@ pub const MAX_CACHE_LINES: usize = MAX_CACHE_SIZE / MAX_BUS_SIZE;
 
 pub trait MemoryExtension {
     fn bus_size(&self) -> usize;
-    fn cache_size(&self) -> usize;
+
+    fn reset(&mut self);
 
     fn update(
         &mut self,
@@ -47,10 +49,7 @@ impl MemoryExtension for NoBusNoCache {
         0
     }
 
-    #[inline]
-    fn cache_size(&self) -> usize {
-        0
-    }
+    fn reset(&mut self) {}
 
     fn update(
         &mut self,
@@ -85,10 +84,7 @@ impl MemoryExtension for BusNoCache {
         self.bus_size
     }
 
-    #[inline]
-    fn cache_size(&self) -> usize {
-        0
-    }
+    fn reset(&mut self) {}
 
     fn update(
         &mut self,
@@ -147,9 +143,9 @@ impl MemoryExtension for CacheLru {
         self.bus_size
     }
 
-    #[inline]
-    fn cache_size(&self) -> usize {
-        self.cache_lines * self.bus_size
+    fn reset(&mut self) {
+        self.cache.clear();
+        self.bus = [0; MAX_BUS_SIZE];
     }
 
     fn update(
@@ -160,11 +156,14 @@ impl MemoryExtension for CacheLru {
         memory_before: [u8; MAX_BUS_SIZE],
         memory_after: [u8; MAX_BUS_SIZE],
     ) {
+        assert!((address as usize % self.bus_size) == 0);
         // Check if address is in cache
         if let Some(index) = self.cache.iter().position(|(addr, _)| *addr == address) {
             assert!(
                 self.cache[index].1 == memory_before,
-                "Cache line is not up to date"
+                "Cache line {index} at {address:08x} is not up to date: {:x?} != {:x?}",
+                self.cache[index].1,
+                memory_before
             );
 
             // Update cache line and bus if necessary
@@ -198,6 +197,7 @@ impl MemoryExtension for CacheLru {
                 self.bus = memory_after;
             }
         }
+        trace!("Cache: {:x?}", self.cache);
 
         // Update memory
         if memory_before != memory_after {

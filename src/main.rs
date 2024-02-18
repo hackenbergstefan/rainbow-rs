@@ -11,7 +11,7 @@ use std::{
 };
 
 use anyhow::Result;
-use clap::{Parser, ValueEnum};
+use clap::{builder::TypedValueParser, Parser, ValueEnum};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 
@@ -56,10 +56,20 @@ struct CmdlineArgs {
     #[arg(long)]
     memory_extension: MemoryExtension,
     /// Width of memory bus in bytes. Only considered for PessimisticHammingLeakage.
-    #[arg(long, default_value = "16", value_parser = clap::builder::PossibleValuesParser::new(["4", "8", "16"]))]
+    #[arg(
+        long,
+        default_value = "16",
+        value_parser = clap::builder::PossibleValuesParser::new(["4", "8", "16"])
+            .map(|s| s.parse::<usize>().unwrap()),
+    )]
     memory_buswidth: usize,
     /// Number of cache lines. Only considered for Caches.
-    #[arg(long, default_value = "4", value_parser = clap::builder::PossibleValuesParser::new(["2", "3", "4"]))]
+    #[arg(
+        long,
+        default_value = "4",
+        value_parser = clap::builder::PossibleValuesParser::new(["2", "3", "4"])
+            .map(|s| s.parse::<usize>().unwrap()),
+    )]
     memory_cache_lines: usize,
     /// Host and port of communication socket
     #[arg(short, long, default_value = "127.0.0.1:6666")]
@@ -176,8 +186,8 @@ fn main() -> Result<()> {
     let args = CmdlineArgs::parse();
 
     // TODO: Use clap to validate this
-    assert!(args.memory_buswidth.count_ones() == 1 && args.memory_buswidth < MAX_BUS_SIZE);
-    assert!(args.memory_cache_lines < MAX_CACHE_LINES);
+    assert!(args.memory_buswidth.count_ones() == 1 && args.memory_buswidth <= MAX_BUS_SIZE);
+    assert!(args.memory_cache_lines <= MAX_CACHE_LINES);
 
     simple_logger::SimpleLogger::new()
         .with_level(match args.verbose {
