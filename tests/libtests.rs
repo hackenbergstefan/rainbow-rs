@@ -13,7 +13,9 @@ use rainbow_rs::{
         HammingDistanceLeakage, HammingWeightLeakage, Leakage, LeakageModel,
         PessimisticHammingLeakage,
     },
-    memory_extension::{BusNoCache, CacheLru, MemoryExtension, NoBusNoCache},
+    memory_extension::{
+        BusNoCache, CacheLruWriteBack, CacheLruWriteThrough, MemoryExtension, NoBusNoCache,
+    },
     ScaData, ThumbTraceEmulator, ThumbTraceEmulatorTrait,
 };
 use rstest::rstest;
@@ -266,14 +268,14 @@ fn test_leakage_memory_bus(#[case] leakage: Box<dyn LeakageModel>, #[case] expec
 }
 
 #[rstest]
-#[case(Box::new(HammingWeightLeakage::new()), vec![1.0, 2.0, 4.0, 4.0, 8.0, 12.0, 1.0])]
-#[case(Box::new(HammingDistanceLeakage::new()), vec![1.0, 1.0, 4.0, 4.0, 8.0, 12.0, 3.0])]
-#[case(Box::new(PessimisticHammingLeakage::new()), vec![4.0, 10.0, 12.0, 28.0, 32.0, 16.0])]
+#[case(Box::new(HammingWeightLeakage::new()), vec![1.0, 2.0, 4.0, 4.0, 8.0, 8.0, 1.0])]
+#[case(Box::new(HammingDistanceLeakage::new()), vec![1.0, 1.0, 4.0, 4.0, 8.0, 8.0, 3.0])]
+#[case(Box::new(PessimisticHammingLeakage::new()), vec![4.0, 10.0, 12.0, 28.0, 28.0, 16.0])]
 fn test_leakage_cache(#[case] leakage: Box<dyn LeakageModel>, #[case] expected: Vec<f32>) {
     assert_eq!(
         &generate_leakage(
             leakage,
-            Box::new(CacheLru::new(4, 2)),
+            Box::new(CacheLruWriteThrough::new(4, 2)),
             Segment(
                 0x1000_0000,
                 vec![
@@ -285,6 +287,60 @@ fn test_leakage_cache(#[case] leakage: Box<dyn LeakageModel>, #[case] expected: 
                     0x01, 0x60, // str r1, [r0]
                     0x02, 0x61, // str r2, [r0, #16]
                     0x01, 0x78, // ldrb r1, [r0] <- Already cached
+                    0x00, 0xBF, // nop
+                    0x00, 0xBF, // nop for hook
+                ],
+            )
+        ),
+        &expected
+    );
+}
+
+#[rstest]
+#[case(Box::new(CacheLruWriteThrough::new(4, 2)), vec![
+    2.0, // movs: Operand, Register
+    4.0, // movt: Operand, Register, previous
+    0.0, // nop
+    0.0, // ldrb: r1 == 0
+    4.0, // adds: r1 == 1, Operand, Result
+    5.0, // strb: Cache write-through Register before, Register after, Cache, Bus, Memory
+    0.0, // nop
+    0.0, // ldrb: r2 == 0
+    0.0, // nop
+    1.0, // ldrb: r3 == 0: Cache update
+    ])]
+#[case(Box::new(CacheLruWriteBack::new(4, 2)), vec![
+    2.0, // movs: Operand, Register
+    4.0, // movt: Operand, Register, previous
+    0.0, // nop
+    0.0, // ldrb: r1 == 0
+    4.0, // adds: r1 == 1, Operand, Result
+    3.0, // strb: Register before, Register after, Cache
+    0.0, // nop
+    0.0, // ldrb: r2 == 0
+    0.0, // nop
+    4.0, // ldrb: r3 == 0: Cache write-back: Cache, 2x Bus, Memory
+    ])]
+fn test_leakage_lrucaches(#[case] cache: Box<dyn MemoryExtension>, #[case] expected: Vec<f32>) {
+    assert_eq!(
+        &generate_leakage(
+            Box::new(PessimisticHammingLeakage::new()),
+            cache,
+            Segment(
+                0x1000_0000,
+                vec![
+                    0x00, 0xBF, // nop for hook
+                    0x00, 0xBF, // nop
+                    0x5f, 0xf4, 0x80, 0x70, // movs r0, #0x0100
+                    0xc1, 0xf2, 0x00, 0x00, // movt r0, #0x1000
+                    0x00, 0xBF, // nop
+                    0x01, 0x78, // ldrb r1, [r0]
+                    0x49, 0x1c, // adds r1, r1, #1
+                    0x01, 0x70, // strb r1, [r0]
+                    0x00, 0xBF, // nop
+                    0x02, 0x79, // ldrb r2, [r0, #4]
+                    0x00, 0xBF, // nop
+                    0x03, 0x7A, // ldrb r3, [r0, #8]
                     0x00, 0xBF, // nop
                     0x00, 0xBF, // nop for hook
                 ],
