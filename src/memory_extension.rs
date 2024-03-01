@@ -222,6 +222,7 @@ struct CacheLruWriteBackCacheLine {
     address: u64,
     content: [u8; MAX_BUS_SIZE],
     memory: [u8; MAX_BUS_SIZE],
+    dirty: bool,
 }
 
 pub struct CacheLruWriteBack {
@@ -265,6 +266,7 @@ impl CacheLruWriteBack {
             address: line.address,
             content: newcontent,
             memory: line.memory,
+            dirty: true,
         };
         self.cache.remove(index);
         self.cache.push(newline);
@@ -275,7 +277,7 @@ impl CacheLruWriteBack {
     /// 2. If line is dirty, leak bus and memory
     fn write_back_and_leak(&mut self, scadata: &mut ScaData) -> CacheLruWriteBackCacheLine {
         let oldline = self.cache.pop_at(0).unwrap();
-        if oldline.content != oldline.memory {
+        if oldline.dirty {
             self.update_and_leak_bus(scadata, oldline.content);
             scadata
                 .memory_updates
@@ -345,6 +347,7 @@ impl MemoryExtension for CacheLruWriteBack {
                 address,
                 content: memory_before,
                 memory: memory_before,
+                dirty: false,
             });
 
             // 4. Update cache line if necessary. Leaks: Cache (may)
