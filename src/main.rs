@@ -21,7 +21,10 @@ use rainbow_rs::{
     leakage::{
         ElmoPowerLeakage, HammingDistanceLeakage, HammingWeightLeakage, PessimisticHammingLeakage,
     },
-    memory_extension::{BusNoCache, CacheLru, NoBusNoCache, MAX_BUS_SIZE, MAX_CACHE_LINES},
+    memory_extension::{
+        BusNoCache, CacheLruWriteBack, CacheLruWriteThrough, NoBusNoCache, MAX_BUS_SIZE,
+        MAX_CACHE_LINES,
+    },
     new_simpleserialsocket_stm32f4, ThumbTraceEmulatorTrait,
 };
 
@@ -37,7 +40,8 @@ enum LeakageModel {
 enum MemoryExtension {
     NoBusNoCache,
     BusNoCache,
-    CacheLru,
+    CacheLruWriteThrough,
+    CacheLruWriteBack,
 }
 
 #[derive(Parser, Debug)]
@@ -222,9 +226,16 @@ fn main() -> Result<()> {
                         MemoryExtension::BusNoCache => {
                             Box::new(BusNoCache::new(args.memory_buswidth))
                         }
-                        MemoryExtension::CacheLru => {
-                            Box::new(CacheLru::new(args.memory_buswidth, args.memory_cache_lines))
+                        MemoryExtension::CacheLruWriteThrough => {
+                            Box::new(CacheLruWriteThrough::new(
+                                args.memory_buswidth,
+                                args.memory_cache_lines,
+                            ))
                         }
+                        MemoryExtension::CacheLruWriteBack => Box::new(CacheLruWriteBack::new(
+                            args.memory_buswidth,
+                            args.memory_cache_lines,
+                        )),
                     },
                     client.clone(),
                 )?;
