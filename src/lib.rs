@@ -21,9 +21,10 @@ use capstone::{
 use log::{debug, info, trace};
 use memory_extension::{MemoryExtension, MAX_BUS_SIZE};
 use unicorn_engine::{
-    unicorn_const::{Arch, HookType, MemType, Mode, Permission},
+    unicorn_const::{Arch, HookType, MemType, Mode, Prot},
     RegisterARM, Unicorn,
 };
+
 
 use asmutils::{ElfInfo, Segment, SideChannelOperandsValues};
 use communication::{Communication, SimpleSerial};
@@ -52,8 +53,8 @@ pub struct ThumbTraceEmulator<'a, C: Communication> {
 pub struct ScaData<'a> {
     pub instruction: &'a OwnedInsn<'static>,
     pub registers: &'a Vec<ArmOperand>,
-    pub regvalues_before: ArrayVec<u64, 8>,
-    pub regvalues_after: ArrayVec<u64, 8>,
+    pub regvalues_before: ArrayVec<u64, 16>,
+    pub regvalues_after: ArrayVec<u64,16>,
     pub cache_updates:
         ArrayVec<([u8; MAX_BUS_SIZE], [u8; MAX_BUS_SIZE]), MAX_MEMORY_UPDATES_PER_INSTRUCTION>,
     pub bus_updates:
@@ -412,7 +413,7 @@ impl<'a, C: Communication> ThumbTraceEmulator<'a, C> {
         memory: Box<dyn MemoryExtension>,
         victim_com: C,
         itc: BiChannel<ITCResponse, ITCRequest>,
-    ) -> Result<Unicorn<'_, ThumbTraceEmulator<'_, C>>> {
+    ) -> Result<Unicorn<'a, ThumbTraceEmulator<'a, C>>> {
         <Unicorn<'a, ThumbTraceEmulator<'a, C>> as ThumbTraceEmulatorTrait<'a, C>>::new(
             elfinfo, leakage, memory, victim_com, itc,
         )
@@ -433,9 +434,9 @@ pub fn new_simpleserialsocket_stm32f4<'a>(
 
     // Set memory map
     {
-        emu.mem_map(0x0800_0000, 256 * 1024, Permission::READ | Permission::EXEC)
+        emu.mem_map(0x0800_0000, 256 * 1024, Prot::READ | Prot::EXEC)
             .map_err(UcError::new)?;
-        emu.mem_map(0x2000_0000, 40 * 1024, Permission::READ | Permission::WRITE)
+        emu.mem_map(0x2000_0000, 40 * 1024, Prot::READ | Prot::WRITE)
             .map_err(UcError::new)?;
     }
 
