@@ -182,7 +182,7 @@ impl MemoryExtension for CacheLruWriteThrough {
         memory_before: [u8; MAX_BUS_SIZE],
         memory_after: [u8; MAX_BUS_SIZE],
     ) {
-        assert!((address as usize % self.bus_size) == 0);
+        assert!((address as usize).is_multiple_of(self.bus_size));
         // Check if address is in cache
         if let Some(index) = self.cache.iter().position(|(addr, _)| *addr == address) {
             assert!(
@@ -313,7 +313,7 @@ impl MemoryExtension for CacheLruWriteBack {
         memory_before: [u8; MAX_BUS_SIZE],
         memory_after: [u8; MAX_BUS_SIZE],
     ) {
-        assert!((address as usize % self.bus_size) == 0);
+        assert!((address as usize).is_multiple_of(self.bus_size));
         // Check if address is in cache
         if let Some(index) = self.cache.iter().position(|line| line.address == address) {
             let line = &self.cache[index];

@@ -25,7 +25,6 @@ use unicorn_engine::{
     RegisterARM, Unicorn,
 };
 
-
 use asmutils::{ElfInfo, Segment, SideChannelOperandsValues};
 use communication::{Communication, SimpleSerial};
 use error::{CapstoneError, UcError};
@@ -54,7 +53,7 @@ pub struct ScaData<'a> {
     pub instruction: &'a OwnedInsn<'static>,
     pub registers: &'a Vec<ArmOperand>,
     pub regvalues_before: ArrayVec<u64, 16>,
-    pub regvalues_after: ArrayVec<u64,16>,
+    pub regvalues_after: ArrayVec<u64, 16>,
     pub cache_updates:
         ArrayVec<([u8; MAX_BUS_SIZE], [u8; MAX_BUS_SIZE]), MAX_MEMORY_UPDATES_PER_INSTRUCTION>,
     pub bus_updates:
