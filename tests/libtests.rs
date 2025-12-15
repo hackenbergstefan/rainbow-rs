@@ -19,7 +19,7 @@ use rainbow_rs::{
     ScaData, ThumbTraceEmulator, ThumbTraceEmulatorTrait,
 };
 use rstest::rstest;
-use unicorn_engine::unicorn_const::Permission;
+use unicorn_engine::unicorn_const::Prot;
 
 #[ctor::ctor]
 fn init() {
@@ -92,12 +92,8 @@ fn generate_leakage(
     )
     .unwrap();
 
-    emu.mem_map(
-        elfinfo.segments().next().unwrap().start(),
-        1024,
-        Permission::all(),
-    )
-    .unwrap();
+    emu.mem_map(elfinfo.segments().next().unwrap().start(), 1024, Prot::ALL)
+        .unwrap();
     emu.load().unwrap();
 
     emu.register_hook_addr(elfinfo.segments().next().unwrap().start(), |emu| {
@@ -372,7 +368,7 @@ fn test_victim_communication() {
     )
     .unwrap();
 
-    emu.mem_map(0x1000_0000, 1024, Permission::all()).unwrap();
+    emu.mem_map(0x1000_0000, 1024, Prot::ALL).unwrap();
     emu.load().unwrap();
 
     emu.register_hook_addr(0x1000_0000, |emu| {
@@ -416,7 +412,7 @@ fn test_terminate() {
     )
     .unwrap();
 
-    emu.mem_map(0x1000_0000, 1024, Permission::all()).unwrap();
+    emu.mem_map(0x1000_0000, 1024, Prot::ALL).unwrap();
     emu.load().unwrap();
 
     emu.register_hook_addr(0x1000_0000, |emu| emu.process_inter_thread_communication());
